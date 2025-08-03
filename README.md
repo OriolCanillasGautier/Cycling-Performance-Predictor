@@ -10,8 +10,6 @@ A standalone Python application based on the Sauce4Strava performance predictor 
 - **Bike configuration**: Support for different bike types (road/MTB) and terrain surfaces
 - **Aerodynamic positioning**: CdA values for different riding positions (TT, road, climbing, upright)
 - **Environmental factors**: Accounts for elevation, wind, and slope
-- **Modern GUI**: Clean, professional interface using CustomTkinter
-- **Settings persistence**: Automatically saves and loads your bike configuration
 
 ## Installation
 
