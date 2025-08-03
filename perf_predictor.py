@@ -258,32 +258,39 @@ def parse_time_input(time_str):
         return None
 
 def calculate_cyclist_powers(riders, position, rotating, work_pct, power, cda, draft_reduction_func):
-    """Calculate individual cyclist powers for drafting visualization - IMPROVED"""
+    """Calculate individual cyclist powers for drafting visualization - INSTANT SNAPSHOT"""
     cyclist_data = []
     
     if rotating:
-        # Rotating paceline - more realistic power distribution
+        # Rotating paceline - show CURRENT instant snapshot, not averages
         front_time = work_pct / 100.0
         
-        # Calculate base power without drafting for front position
-        base_power = power / (1 - front_time + front_time * draft_reduction_func(riders, riders))
+        # Calculate the power needed at front (no draft) and at back (with draft)
+        back_draft_reduction = draft_reduction_func(riders, riders)  # Maximum draft benefit
         
+        # Back-calculate what the front/back powers are from your average power
+        front_power = power / (front_time + (1 - front_time) * back_draft_reduction)
+        back_power = front_power * back_draft_reduction
+        
+        # Show a snapshot: currently position 1 is at front, others draft
         for i in range(1, riders + 1):
-            if i == position:
-                # Your average power (input power)
-                avg_power = power
-                time_at_front = front_time
+            if i == 1:
+                # Currently at front - high power, no draft
+                current_power = front_power
+                is_front = True
             else:
-                # Other riders' estimated power (slight variation)
-                other_front_time = (1 - front_time) / (riders - 1) if riders > 1 else 0
-                other_avg_draft = 1 - other_front_time + other_front_time * draft_reduction_func(riders, riders)
-                avg_power = base_power * other_avg_draft
-                time_at_front = other_front_time
+                # Currently drafting - low power, with draft benefit
+                draft_factor = draft_reduction_func(riders, i)
+                current_power = front_power * draft_factor
+                is_front = False
+            
+            # Only show time percentage for YOUR position (not current front rider)
+            show_time_pct = work_pct if i == position else 0
             
             cyclist_data.append({
                 "position": i,
-                "power": int(avg_power),
-                "time_pct": time_at_front * 100,
+                "power": int(current_power),
+                "time_pct": show_time_pct,  # Only YOUR position shows time %
                 "is_you": i == position
             })
     else:
