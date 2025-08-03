@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Cycling Performance Predictor
-Exact replica of Sauce4Strava's performance predictor
+Exact replica of Sauce4Strava's performance predictor with reverse calculation mode
 """
 
 import gradio as gr
@@ -95,34 +95,84 @@ class CyclingPhysics:
                 break
         
         return best_estimate if best_diff < max(5.0, abs(power * 0.02)) else None
+    
+    @staticmethod
+    def cycling_time_power_search(target_time: float, distance: float, slope: float, weight: float,
+                                crr: float, cda: float, elevation: float = 0,
+                                wind: float = 0, loss: float = 0.035) -> Optional[PowerEstimate]:
+        """Find the power required for the target time over given distance"""
+        target_velocity = distance / target_time  # m/s
+        
+        # Use binary search to find the power that gives us the target velocity
+        # Expanded power range for very slow speeds (long times)
+        power_min, power_max = 25, 2000  # Increased range
+        best_estimate = None
+        best_diff = float('inf')
+        
+        for iteration in range(200):  # More iterations for precision
+            power_mid = (power_min + power_max) / 2
+            
+            estimate = CyclingPhysics.cycling_power_velocity_search(
+                power_mid, slope, weight, crr, cda, elevation, wind, loss
+            )
+            
+            if estimate is None:
+                power_min = power_mid
+                continue
+                
+            velocity_diff = estimate.velocity - target_velocity
+            
+            if abs(velocity_diff) < best_diff:
+                best_diff = abs(velocity_diff)
+                best_estimate = estimate
+            
+            # More precise convergence for slow speeds
+            if abs(velocity_diff) < 0.001:  # Very precise
+                break
+                
+            if velocity_diff > 0:  # Too fast, reduce power
+                power_max = power_mid
+            else:  # Too slow, increase power
+                power_min = power_mid
+                
+            # Prevent infinite loop with very small power ranges
+            if power_max - power_min < 0.1:
+                break
+                
+        return best_estimate if best_diff < 0.05 else None
 
 def cycling_draft_drag_reduction(riders: int, position: int) -> float:
-    """Calculate drag reduction factor for drafting"""
+    """Calculate drag reduction factor for drafting - FIXED"""
     if riders < 2 or position < 1 or position > riders:
         return 1.0
     
-    # Coefficients based on van Druenen & Blocken research
+    # Improved coefficients based on research - more realistic values
     coefficients = {
-        2: {"base": 0.65, "decay": 0.8},
-        3: {"base": 0.60, "decay": 0.75},
-        4: {"base": 0.55, "decay": 0.70},
-        5: {"base": 0.52, "decay": 0.68},
-        6: {"base": 0.50, "decay": 0.65},
-        7: {"base": 0.48, "decay": 0.63},
-        8: {"base": 0.46, "decay": 0.62},
+        2: {"base": 0.70, "decay": 0.85},
+        3: {"base": 0.65, "decay": 0.80},
+        4: {"base": 0.62, "decay": 0.78},
+        5: {"base": 0.60, "decay": 0.76},
+        6: {"base": 0.58, "decay": 0.74},
+        7: {"base": 0.56, "decay": 0.72},
+        8: {"base": 0.55, "decay": 0.70},
     }
     
     if riders > 8:
-        position = max(1, int(8 / riders * position))
+        # Scale position proportionally for larger groups
+        scaled_position = max(1, min(8, int(8 * position / riders)))
         riders = 8
+        position = scaled_position
     
     c = coefficients[riders]
     if position == 1:
         return 1.0  # No draft benefit at front
     else:
-        # Progressive benefit based on position
-        position_factor = (riders - position) / (riders - 1)
-        return c["base"] + (1 - c["base"]) * (1 - c["decay"]) * position_factor
+        # More realistic progressive benefit calculation
+        # Position 2 gets most benefit, further back gets progressively less
+        max_benefit = c["base"]
+        position_factor = (position - 1) / (riders - 1)  # 0 to 1 scale
+        draft_reduction = max_benefit + (1 - max_benefit) * (position_factor * c["decay"])
+        return min(1.0, draft_reduction)
 
 TERRAIN_CRR = {
     "road": {
@@ -168,20 +218,67 @@ def format_time(seconds):
     else:
         return f"{minutes}:{secs:02d}"
 
+def parse_time_input(time_str):
+    """Parse time input (MM:SS or H:MM:SS) to seconds - FIXED"""
+    if not time_str or time_str.strip() == "":
+        return None
+    
+    try:
+        time_parts = time_str.strip().split(':')
+        
+        if len(time_parts) == 2:
+            # Format MM:SS (minutes can be > 59)
+            minutes = int(time_parts[0])
+            seconds = int(time_parts[1])
+            
+            # Validate seconds
+            if seconds < 0 or seconds >= 60:
+                return None
+                
+            return minutes * 60 + seconds
+            
+        elif len(time_parts) == 3:
+            # Format H:MM:SS
+            hours = int(time_parts[0])
+            minutes = int(time_parts[1])
+            seconds = int(time_parts[2])
+            
+            # Validate minutes and seconds
+            if minutes < 0 or minutes >= 60 or seconds < 0 or seconds >= 60:
+                return None
+                
+            return hours * 3600 + minutes * 60 + seconds
+        else:
+            return None
+            
+    except ValueError:
+        # Handle non-numeric input
+        return None
+    except Exception:
+        return None
+
 def calculate_cyclist_powers(riders, position, rotating, work_pct, power, cda, draft_reduction_func):
-    """Calculate individual cyclist powers for drafting visualization"""
+    """Calculate individual cyclist powers for drafting visualization - IMPROVED"""
     cyclist_data = []
     
     if rotating:
-        # Rotating paceline
+        # Rotating paceline - more realistic power distribution
         front_time = work_pct / 100.0
+        
+        # Calculate base power without drafting for front position
+        base_power = power / (1 - front_time + front_time * draft_reduction_func(riders, riders))
+        
         for i in range(1, riders + 1):
             if i == position:
+                # Your average power (input power)
                 avg_power = power
                 time_at_front = front_time
             else:
-                avg_power = power * 0.98  # Slight variation for other riders
-                time_at_front = (1 - front_time) / (riders - 1) if riders > 1 else 0
+                # Other riders' estimated power (slight variation)
+                other_front_time = (1 - front_time) / (riders - 1) if riders > 1 else 0
+                other_avg_draft = 1 - other_front_time + other_front_time * draft_reduction_func(riders, riders)
+                avg_power = base_power * other_avg_draft
+                time_at_front = other_front_time
             
             cyclist_data.append({
                 "position": i,
@@ -190,9 +287,10 @@ def calculate_cyclist_powers(riders, position, rotating, work_pct, power, cda, d
                 "is_you": i == position
             })
     else:
-        # Static positions
+        # Static positions - calculate actual power needed for each position
         for i in range(1, riders + 1):
             draft_factor = draft_reduction_func(riders, i)
+            # Power needed = base power / draft reduction factor
             estimated_power = power / draft_factor if draft_factor > 0 else power
             cyclist_data.append({
                 "position": i,
@@ -204,21 +302,40 @@ def calculate_cyclist_powers(riders, position, rotating, work_pct, power, cda, d
     return cyclist_data
 
 def create_cyclist_visualization(cyclist_data):
-    """Create HTML visualization of cyclists with their power values"""
+    """Create HTML visualization of cyclists with their power values - IMPROVED ICONS"""
     if not cyclist_data:
         return ""
     
-    html = '<div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; padding: 15px; background: #f8f9fa; border-radius: 8px;">'
+    html = '''
+    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding: 15px; 
+                background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); 
+                border-radius: 12px; border: 1px solid #dee2e6;">
+    '''
     
     for cyclist in cyclist_data:
         you_indicator = " (You)" if cyclist["is_you"] else ""
-        time_info = f" - {cyclist['time_pct']:.0f}%" if cyclist["time_pct"] > 0 else ""
+        time_info = f"<div style='font-size: 10px; color: #666; margin-top: 2px;'>{cyclist['time_pct']:.0f}% front</div>" if cyclist["time_pct"] > 0 else ""
+        
+        # Better cyclist emoji and styling
+        rider_emoji = "🚴‍♂️" if cyclist["position"] % 2 == 1 else "🚴‍♀️"
+        border_color = "#007acc" if cyclist["is_you"] else "#6c757d"
+        background_color = "#e3f2fd" if cyclist["is_you"] else "#ffffff"
         
         html += f'''
-        <div style="text-align: center; padding: 10px; border: 2px solid {'#007acc' if cyclist['is_you'] else '#ccc'}; border-radius: 8px; background: {'#f0f8ff' if cyclist['is_you'] else '#fff'};">
-            <div style="font-size: 24px;">🚴</div>
-            <div style="font-size: 12px; font-weight: bold;">Pos. {cyclist["position"]}{you_indicator}</div>
-            <div style="font-size: 14px; color: #333;">{cyclist["power"]}w{time_info}</div>
+        <div style="text-align: center; padding: 8px; 
+                    border: 2px solid {border_color}; 
+                    border-radius: 10px; 
+                    background: {background_color}; 
+                    min-width: 70px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            <div style="font-size: 28px; margin-bottom: 4px;">{rider_emoji}</div>
+            <div style="font-size: 11px; font-weight: bold; color: #333;">
+                Pos. {cyclist["position"]}{you_indicator}
+            </div>
+            <div style="font-size: 13px; color: #000; font-weight: 600; margin-top: 2px;">
+                {cyclist["power"]}w
+            </div>
+            {time_info}
         </div>
         '''
     
@@ -226,15 +343,17 @@ def create_cyclist_visualization(cyclist_data):
     return html
 
 def calculate_performance(
+    # Calculation mode
+    calc_mode,
     # Original performance inputs (user-editable)
     orig_power, orig_time_input, orig_speed_input,
     # Prediction inputs
-    power, body_weight, gear_weight, slope, distance, elevation, wind,
+    power, target_time_input, body_weight, gear_weight, slope, distance, elevation, wind,
     cda, crr, drafting, riders, position, rotating, work_pct, bike_type, terrain
 ):
-    """Main calculation function"""
+    """Main calculation function with reverse calculation support"""
     try:
-        if power <= 0 or body_weight <= 0 or gear_weight < 0 or distance <= 0:
+        if body_weight <= 0 or gear_weight < 0 or distance <= 0:
             return create_error_output()
         
         # Convert units
@@ -243,114 +362,153 @@ def calculate_performance(
         distance_m = distance * 1000
         wind_ms = wind / 3.6
         
-        # Apply drafting for predicted performance
+        # Apply drafting
         effective_cda = cda
-        group_power = power
+        group_power = 0
         power_variance = 0
         draft_info = ""
         cyclist_viz = ""
         
         if drafting and riders >= 2:
             if rotating:
-                # Rotating paceline
+                # Rotating paceline - corrected calculation
                 front_time = work_pct / 100.0
-                draft_reduction = 1 - (1 - cycling_draft_drag_reduction(riders, riders)) * (1 - front_time)
-                effective_cda = cda * draft_reduction
+                # Average draft reduction over time
+                back_draft_reduction = cycling_draft_drag_reduction(riders, riders)
+                avg_draft_reduction = front_time * 1.0 + (1 - front_time) * back_draft_reduction
+                effective_cda = cda * avg_draft_reduction
                 draft_info = f"Rotating: {work_pct:.0f}% time at front"
                 
-                # Calculate power variance
-                front_draft = 1.0
-                back_draft = cycling_draft_drag_reduction(riders, riders)
-                power_variance = ((1/back_draft - 1/front_draft) / (1/back_draft + 1/front_draft)) * 100
+                # Calculate power variance (difference between front and back)
+                front_power_factor = 1.0
+                back_power_factor = back_draft_reduction
+                power_variance = abs(1/back_power_factor - 1/front_power_factor) / (1/back_power_factor) * 100
                 
             else:
                 # Static position
                 draft_reduction = cycling_draft_drag_reduction(riders, position)
                 effective_cda = cda * draft_reduction
-                draft_info = f"Position {position}/{riders}"
-            
-            # Create cyclist visualization
-            cyclist_data = calculate_cyclist_powers(riders, position, rotating, work_pct, power, cda, cycling_draft_drag_reduction)
-            cyclist_viz = create_cyclist_visualization(cyclist_data)
-            
-            # Calculate average group power
-            if cyclist_data:
-                group_power = sum(c["power"] for c in cyclist_data) / len(cyclist_data)
+                draft_info = f"Position {position}/{riders} (draft: {(1-draft_reduction)*100:.0f}%)"
         
-        # Calculate predicted performance (with potential modifications)
-        predicted_estimate = CyclingPhysics.cycling_power_velocity_search(
-            power, slope_decimal, total_weight, crr, effective_cda, elevation, wind_ms
-        )
-        
-        if predicted_estimate and predicted_estimate.velocity > 0:
-            # Predicted performance  
-            pred_time_seconds = distance_m / predicted_estimate.velocity
-            pred_speed_kmh = predicted_estimate.velocity * 3.6
-            pred_wkg = power / total_weight  # Include bike weight
-            
-            # Original performance (user inputs or defaults)
-            orig_time_formatted = orig_time_input if orig_time_input else format_time(pred_time_seconds)
-            orig_speed_formatted = f"{orig_speed_input:.1f}" if orig_speed_input is not None else f"{pred_speed_kmh:.1f}"
-            orig_wkg_formatted = f"{orig_power / total_weight:.1f}" if orig_power and orig_power > 0 else f"{pred_wkg:.1f}"
-            
-            # Time difference calculation
-            time_diff_str = ""
-            if orig_time_input:
-                try:
-                    # Parse time input (MM:SS or H:MM:SS)
-                    time_parts = orig_time_input.split(':')
-                    if len(time_parts) == 2:
-                        orig_time_seconds = int(time_parts[0]) * 60 + int(time_parts[1])
-                    elif len(time_parts) == 3:
-                        orig_time_seconds = int(time_parts[0]) * 3600 + int(time_parts[1]) * 60 + int(time_parts[2])
-                    else:
-                        orig_time_seconds = pred_time_seconds
-                    
-                    time_diff = pred_time_seconds - orig_time_seconds
-                    if abs(time_diff) > 1:
-                        if time_diff > 0:
-                            time_diff_str = f" (+{format_time(abs(time_diff))})"
-                        else:
-                            time_diff_str = f" (-{format_time(abs(time_diff))})"
-                except:
-                    time_diff_str = ""
-            
-            # Power breakdown
-            total_power_components = abs(predicted_estimate.g_watts) + abs(predicted_estimate.a_watts) + abs(predicted_estimate.r_watts)
-            if total_power_components > 0:
-                gravity_pct = abs(predicted_estimate.g_watts) / total_power_components * 100
-                aero_pct = abs(predicted_estimate.a_watts) / total_power_components * 100
-                rolling_pct = abs(predicted_estimate.r_watts) / total_power_components * 100
-            else:
-                gravity_pct = aero_pct = rolling_pct = 0
-            
-            return create_success_output(
-                orig_time=orig_time_formatted,
-                orig_speed=orig_speed_formatted,
-                orig_wkg=orig_wkg_formatted,
-                pred_time=format_time(pred_time_seconds),
-                pred_speed=f"{pred_speed_kmh:.1f}", 
-                pred_wkg=f"{pred_wkg:.1f}",
-                time_diff=time_diff_str,
-                gravity_watts=f"{predicted_estimate.g_watts:.0f}",
-                gravity_wkg=f"{predicted_estimate.g_watts / total_weight:.1f}",
-                gravity_pct=f"{gravity_pct:.0f}",
-                aero_watts=f"{predicted_estimate.a_watts:.0f}",
-                aero_wkg=f"{predicted_estimate.a_watts / total_weight:.1f}",
-                aero_pct=f"{aero_pct:.0f}",
-                rolling_watts=f"{predicted_estimate.r_watts:.0f}",
-                rolling_wkg=f"{predicted_estimate.r_watts / total_weight:.1f}",
-                rolling_pct=f"{rolling_pct:.0f}",
-                position_desc=get_cda_position(cda),
-                group_power=f"{group_power:.0f}" if drafting else "",
-                power_variance=f"{power_variance:.0f}" if drafting else "",
-                draft_info=draft_info,
-                cyclist_viz=cyclist_viz,
-                show_drafting=drafting,
-                status="valid"
+        # Calculate based on mode
+        if calc_mode == "Power → Time":
+            if power <= 0:
+                return create_error_output("Power must be greater than 0")
+                
+            # Calculate predicted performance (time from power)
+            predicted_estimate = CyclingPhysics.cycling_power_velocity_search(
+                power, slope_decimal, total_weight, crr, effective_cda, elevation, wind_ms
             )
+            
+            if predicted_estimate and predicted_estimate.velocity > 0:
+                pred_time_seconds = distance_m / predicted_estimate.velocity
+                pred_speed_kmh = predicted_estimate.velocity * 3.6
+                pred_power = power
+                calc_power = power
+                
+                # Create cyclist visualization for drafting
+                if drafting and riders >= 2:
+                    cyclist_data = calculate_cyclist_powers(riders, position, rotating, work_pct, power, cda, cycling_draft_drag_reduction)
+                    cyclist_viz = create_cyclist_visualization(cyclist_data)
+                    if cyclist_data:
+                        group_power = sum(c["power"] for c in cyclist_data) / len(cyclist_data)
+            else:
+                return create_error_output("No valid solution found for these parameters")
+                
+        else:  # Time → Power
+            target_time_seconds = parse_time_input(target_time_input)
+            if not target_time_seconds or target_time_seconds <= 0:
+                return create_error_output("Please enter a valid target time (MM:SS or H:MM:SS)")
+            
+            # Calculate required power for target time
+            predicted_estimate = CyclingPhysics.cycling_time_power_search(
+                target_time_seconds, distance_m, slope_decimal, total_weight, crr, effective_cda, elevation, wind_ms
+            )
+            
+            if predicted_estimate and predicted_estimate.velocity > 0:
+                pred_time_seconds = target_time_seconds
+                pred_speed_kmh = predicted_estimate.velocity * 3.6
+                pred_power = predicted_estimate.watts
+                calc_power = pred_power
+                
+                # Create cyclist visualization for drafting
+                if drafting and riders >= 2:
+                    cyclist_data = calculate_cyclist_powers(riders, position, rotating, work_pct, calc_power, cda, cycling_draft_drag_reduction)
+                    cyclist_viz = create_cyclist_visualization(cyclist_data)
+                    if cyclist_data:
+                        group_power = sum(c["power"] for c in cyclist_data) / len(cyclist_data)
+            else:
+                return create_error_output("No valid solution found for this target time")
+        
+        pred_wkg = calc_power / total_weight
+        
+        # Original performance (user inputs or defaults)
+        orig_time_formatted = orig_time_input if orig_time_input else format_time(pred_time_seconds)
+        orig_speed_formatted = f"{orig_speed_input:.1f}" if orig_speed_input is not None else f"{pred_speed_kmh:.1f}"
+        orig_wkg_formatted = f"{orig_power / total_weight:.1f}" if orig_power and orig_power > 0 else f"{pred_wkg:.1f}"
+        
+        # Time difference calculation
+        time_diff_str = ""
+        if orig_time_input:
+            orig_time_seconds = parse_time_input(orig_time_input)
+            if orig_time_seconds:
+                time_diff = pred_time_seconds - orig_time_seconds
+                if abs(time_diff) > 1:
+                    if time_diff > 0:
+                        time_diff_str = f" (+{format_time(abs(time_diff))})"
+                    else:
+                        time_diff_str = f" (-{format_time(abs(time_diff))})"
+        
+        # Power breakdown - fixed calculation
+        gravity_watts = predicted_estimate.g_watts
+        aero_watts = predicted_estimate.a_watts  
+        rolling_watts = predicted_estimate.r_watts
+        
+        # Calculate percentages based on power components that require energy
+        positive_components = []
+        if gravity_watts > 0:  # Climbing
+            positive_components.append(gravity_watts)
+        if aero_watts > 0:  # Always positive (drag)
+            positive_components.append(aero_watts)
+        if rolling_watts > 0:  # Always positive (resistance)
+            positive_components.append(rolling_watts)
+        
+        total_positive_power = sum(positive_components)
+        
+        if total_positive_power > 0:
+            gravity_pct = (gravity_watts / total_positive_power * 100) if gravity_watts > 0 else 0
+            aero_pct = aero_watts / total_positive_power * 100
+            rolling_pct = rolling_watts / total_positive_power * 100
         else:
-            return create_error_output()
+            gravity_pct = aero_pct = rolling_pct = 0
+        
+        return create_success_output(
+            orig_time=orig_time_formatted,
+            orig_speed=orig_speed_formatted,
+            orig_wkg=orig_wkg_formatted,
+            pred_time=format_time(pred_time_seconds),
+            pred_speed=f"{pred_speed_kmh:.1f}", 
+            pred_power=f"{calc_power:.0f}",
+            pred_wkg=f"{pred_wkg:.1f}",
+            time_diff=time_diff_str,
+            gravity_watts=f"{gravity_watts:.0f}",
+            gravity_wkg=f"{gravity_watts / total_weight:.1f}",
+            gravity_pct=f"{gravity_pct:.0f}",
+            aero_watts=f"{aero_watts:.0f}",
+            aero_wkg=f"{aero_watts / total_weight:.1f}",
+            aero_pct=f"{aero_pct:.0f}",
+            rolling_watts=f"{rolling_watts:.0f}",
+            rolling_wkg=f"{rolling_watts / total_weight:.1f}",
+            rolling_pct=f"{rolling_pct:.0f}",
+            position_desc=get_cda_position(cda),
+            group_power=f"{group_power:.0f}" if drafting and group_power > 0 else "",
+            power_variance=f"{power_variance:.0f}" if drafting and power_variance > 0 else "",
+            draft_info=draft_info,
+            cyclist_viz=cyclist_viz,
+            show_drafting=drafting,
+            calc_mode=calc_mode,
+            status="valid"
+        )
             
     except Exception as e:
         return create_error_output(f"Error: {str(e)}")
@@ -360,7 +518,7 @@ def create_success_output(**kwargs):
     return (
         kwargs["status"],
         kwargs["orig_time"], kwargs["orig_speed"], kwargs["orig_wkg"],
-        kwargs["pred_time"], kwargs["pred_speed"], kwargs["pred_wkg"], kwargs["time_diff"],
+        kwargs["pred_time"], kwargs["pred_speed"], kwargs["pred_power"], kwargs["pred_wkg"], kwargs["time_diff"],
         f"{kwargs['gravity_watts']}w\n{kwargs['gravity_wkg']}w/kg ({kwargs['gravity_pct']}%)",
         f"{kwargs['aero_watts']}w\n{kwargs['aero_wkg']}w/kg ({kwargs['aero_pct']}%)", 
         f"{kwargs['rolling_watts']}w\n{kwargs['rolling_wkg']}w/kg ({kwargs['rolling_pct']}%)",
@@ -375,7 +533,7 @@ def create_success_output(**kwargs):
 def create_error_output(message="No velocity predicted for these parameters"):
     """Create error output"""
     return (
-        "invalid", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", 
+        "invalid", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", 
         gr.update(visible=False)
     )
 
@@ -406,14 +564,28 @@ with gr.Blocks(title="Performance Predictor") as app:
         border-radius: 8px !important;
         margin: 20px 0 !important;
     }
+    .mode-selector {
+        background: #f8f9fa !important;
+        border: 2px solid #007acc !important;
+        border-radius: 8px !important;
+        font-weight: bold !important;
+    }
     </style>
     
     <div class="performance-predictor">
         <h1>Performance Predictor</h1>
         <p><em>The Performance Predictor is a cycling power calculator that lets you examine the impact of altered performance factors.</em></p>
-        <p><strong>Change these parameters to see the estimated effect on performance.</strong></p>
+        <p><strong>Choose calculation mode and change parameters to see the estimated effect on performance.</strong></p>
     </div>
     """)
+    
+    # Calculation mode selector
+    calc_mode = gr.Radio(
+        choices=["Power → Time", "Time → Power"],
+        value="Power → Time",
+        label="Calculation Mode",
+        elem_classes="mode-selector"
+    )
     
     with gr.Row():
         with gr.Column(scale=1):
@@ -483,7 +655,11 @@ with gr.Blocks(title="Performance Predictor") as app:
             )
         
         with gr.Column(scale=1):
-            power = gr.Number(value=250, label="Predicted Power (w)", minimum=50)
+            # Mode-dependent inputs
+            power = gr.Number(value=250, label="Power (w)", minimum=50, visible=True)
+            target_time_input = gr.Textbox(value="", label="Target Time (MM:SS or H:MM:SS)", 
+                                         placeholder="Ex: 15:30 or 1:15:30", visible=False)
+            
             body_weight = gr.Number(value=70, label="Body Weight (kg)", minimum=30)
             gear_weight = gr.Number(value=13.0, label="Bike/Gear Weight (kg)", minimum=5)
             slope = gr.Number(value=0, label="Gradient (%)", step=0.1)
@@ -508,6 +684,7 @@ with gr.Blocks(title="Performance Predictor") as app:
             gr.HTML('<div class="heading">Predicted Performance:</div>')
             pred_time = gr.Textbox(label="Time", interactive=False)
             pred_speed = gr.Textbox(label="Speed (km/h)", interactive=False)
+            pred_power = gr.Textbox(label="Power (w)", interactive=False)
             pred_wkg = gr.Textbox(label="Watts/kg", interactive=False)
             time_diff = gr.Textbox(label="Difference", interactive=False)
     
@@ -529,6 +706,12 @@ with gr.Blocks(title="Performance Predictor") as app:
     status = gr.Textbox(label="Status", visible=False)
     
     # Event handlers
+    def update_input_visibility(mode):
+        if mode == "Power → Time":
+            return gr.Number(visible=True), gr.Textbox(visible=False)
+        else:  # Time → Power
+            return gr.Number(visible=False), gr.Textbox(visible=True)
+    
     def update_terrain_options(bike_type_val):
         choices = list(TERRAIN_CRR[bike_type_val].keys())
         return gr.Dropdown(choices=choices, value=choices[0])
@@ -548,6 +731,7 @@ with gr.Blocks(title="Performance Predictor") as app:
         return gr.Slider(visible=rotating_val)
     
     # Bind events
+    calc_mode.change(update_input_visibility, inputs=[calc_mode], outputs=[power, target_time_input])
     bike_type.change(update_terrain_options, inputs=[bike_type], outputs=[terrain])
     bike_type.change(update_crr_value, inputs=[bike_type, terrain], outputs=[crr])
     terrain.change(update_crr_value, inputs=[bike_type, terrain], outputs=[crr])
@@ -557,12 +741,13 @@ with gr.Blocks(title="Performance Predictor") as app:
     
     # Main calculation with button
     inputs = [
+        calc_mode,  # New calculation mode
         orig_power, orig_time_input, orig_speed_input,  # Original performance inputs
-        power, body_weight, gear_weight, slope, distance, elevation, wind,
+        power, target_time_input, body_weight, gear_weight, slope, distance, elevation, wind,
         cda, crr, drafting, riders, position, rotating, work_pct, bike_type, terrain
     ]
     
-    outputs = [status, orig_time, orig_speed, orig_wkg, pred_time, pred_speed, pred_wkg, 
+    outputs = [status, orig_time, orig_speed, orig_wkg, pred_time, pred_speed, pred_power, pred_wkg, 
                time_diff, gravity_power, aero_power, rolling_power, position_info, 
                group_power, power_variance, draft_info_display, cyclist_visualization, drafting_section]
     
