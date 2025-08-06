@@ -81,12 +81,15 @@ class CyclingPhysics:
         for v in range(-5000, 5001, 1):
             velocity = v / 100.0
             
+            if velocity <= 0:
+                continue
+                
             estimate = CyclingPhysics.cycling_power_estimate(
                 velocity, slope, weight, crr, cda, elevation, wind, loss
             )
             
             diff = abs(estimate.watts - power)
-            if diff < best_diff and velocity > 0:
+            if diff < best_diff:
                 best_diff = diff
                 best_estimate = estimate
             
@@ -94,7 +97,8 @@ class CyclingPhysics:
             if diff < 0.1:
                 break
         
-        return best_estimate if best_diff < max(5.0, abs(power * 0.02)) else None
+        # Always return the best estimate we found (no tolerance check)
+        return best_estimate
     
     @staticmethod
     def cycling_time_power_search(target_time: float, distance: float, slope: float, weight: float,
@@ -103,43 +107,48 @@ class CyclingPhysics:
         """Find the power required for the target time over given distance"""
         target_velocity = distance / target_time  # m/s
         
-        # Use binary search to find the power that gives us the target velocity
-        # Expanded power range for very slow speeds (long times)
-        power_min, power_max = 25, 2000  # Increased range
-        best_estimate = None
-        best_diff = float('inf')
+        # First try: Direct calculation estimate
+        air_density = 1.225 * math.exp(-elevation / 8400)
+        fg = weight * 9.8066 * slope
+        fr = weight * 9.8066 * math.cos(math.atan(slope)) * crr
+        fa = 0.5 * air_density * cda * target_velocity * abs(target_velocity)
         
-        for iteration in range(200):  # More iterations for precision
-            power_mid = (power_min + power_max) / 2
-            
-            estimate = CyclingPhysics.cycling_power_velocity_search(
-                power_mid, slope, weight, crr, cda, elevation, wind, loss
-            )
-            
-            if estimate is None:
-                power_min = power_mid
+        estimated_power = (fg + fr + fa) * target_velocity / (1 - loss)
+        
+        # Test if this estimate works
+        test_result = CyclingPhysics.cycling_power_velocity_search(
+            estimated_power, slope, weight, crr, cda, elevation, wind, loss
+        )
+        
+        if test_result and abs(test_result.velocity - target_velocity) < target_velocity * 0.1:
+            return test_result
+        
+        # If direct estimate doesn't work, try powers around it
+        for power_multiplier in [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0, 2.5, 3.0]:
+            test_power = estimated_power * power_multiplier
+            if test_power < 10 or test_power > 3000:
                 continue
                 
-            velocity_diff = estimate.velocity - target_velocity
+            result = CyclingPhysics.cycling_power_velocity_search(
+                test_power, slope, weight, crr, cda, elevation, wind, loss
+            )
             
-            if abs(velocity_diff) < best_diff:
-                best_diff = abs(velocity_diff)
-                best_estimate = estimate
+            if result and abs(result.velocity - target_velocity) < target_velocity * 0.15:
+                return result
+        
+        # Last resort: Try a range of fixed powers
+        for test_power in [50, 75, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 1000]:
+            result = CyclingPhysics.cycling_power_velocity_search(
+                test_power, slope, weight, crr, cda, elevation, wind, loss
+            )
             
-            # More precise convergence for slow speeds
-            if abs(velocity_diff) < 0.001:  # Very precise
-                break
-                
-            if velocity_diff > 0:  # Too fast, reduce power
-                power_max = power_mid
-            else:  # Too slow, increase power
-                power_min = power_mid
-                
-            # Prevent infinite loop with very small power ranges
-            if power_max - power_min < 0.1:
-                break
-                
-        return best_estimate if best_diff < 0.05 else None
+            if result and abs(result.velocity - target_velocity) < target_velocity * 0.2:
+                return result
+        
+        # If nothing works, create a manual estimate
+        return CyclingPhysics.cycling_power_estimate(
+            target_velocity, slope, weight, crr, cda, elevation, wind, loss
+        )
 
 def cycling_draft_drag_reduction(riders: int, position: int) -> float:
     """Calculate drag reduction factor for drafting - FIXED"""
@@ -295,10 +304,15 @@ def calculate_cyclist_powers(riders, position, rotating, work_pct, power, cda, d
             })
     else:
         # Static positions - calculate actual power needed for each position
+        # The "power" parameter is what YOU are putting out
+        # Others need different power based on their draft position
+        your_draft_factor = draft_reduction_func(riders, position)
+        base_power_needed = power / your_draft_factor  # Power needed without any draft
+        
         for i in range(1, riders + 1):
             draft_factor = draft_reduction_func(riders, i)
-            # Power needed = base power / draft reduction factor
-            estimated_power = power / draft_factor if draft_factor > 0 else power
+            # Power this position needs = base power * their draft factor
+            estimated_power = base_power_needed * draft_factor
             cyclist_data.append({
                 "position": i,
                 "power": int(estimated_power),
@@ -396,6 +410,12 @@ def calculate_performance(
                 draft_reduction = cycling_draft_drag_reduction(riders, position)
                 effective_cda = cda * draft_reduction
                 draft_info = f"Position {position}/{riders} (draft: {(1-draft_reduction)*100:.0f}%)"
+                
+                # Calculate power variance for static positions (front vs back)
+                front_draft_factor = cycling_draft_drag_reduction(riders, 1)  # Position 1 (front)
+                back_draft_factor = cycling_draft_drag_reduction(riders, riders)  # Last position
+                if front_draft_factor > 0 and back_draft_factor > 0:
+                    power_variance = abs((1/back_draft_factor) - (1/front_draft_factor)) / (1/back_draft_factor) * 100
         
         # Calculate based on mode
         if calc_mode == "Power → Time":
@@ -449,6 +469,34 @@ def calculate_performance(
         
         pred_wkg = calc_power / total_weight
         
+        # Check for unrealistic values and add warnings
+        speed_warning = ""
+        power_warning = ""
+        
+        # Speed warnings with error percentages
+        if pred_speed_kmh < 5.0:  # Less than 5 km/h is walking pace
+            walking_speed = 5.0
+            error_pct = abs(pred_speed_kmh - walking_speed) / walking_speed * 100
+            speed_warning = f" ⚠️ Walking pace - check parameters ({error_pct:.0f}% below 5 km/h)"
+        elif pred_speed_kmh < 8.0 and slope > 20:  # Very steep and very slow
+            reasonable_speed = 8.0
+            error_pct = abs(pred_speed_kmh - reasonable_speed) / reasonable_speed * 100
+            speed_warning = f" ⚠️ Extremely steep - consider walking ({error_pct:.0f}% below 8 km/h)"
+        elif pred_speed_kmh < 10.0 and slope > 15:  # Steep and slow
+            reasonable_speed = 10.0
+            error_pct = abs(pred_speed_kmh - reasonable_speed) / reasonable_speed * 100
+            speed_warning = f" ⚠️ Very steep gradient ({error_pct:.0f}% below 10 km/h)"
+        
+        # Power warnings with w/kg thresholds
+        if pred_wkg > 8.0:  # More than 8 w/kg is elite level
+            elite_threshold = 8.0
+            error_pct = (pred_wkg - elite_threshold) / elite_threshold * 100
+            power_warning = f" ⚠️ Elite power level! ({error_pct:.0f}% above 8 w/kg)"
+        elif pred_wkg > 6.0:  # More than 6 w/kg is very high
+            high_threshold = 6.0
+            error_pct = (pred_wkg - high_threshold) / high_threshold * 100
+            power_warning = f" ⚠️ Very high power required ({error_pct:.0f}% above 6 w/kg)"
+        
         # Original performance (user inputs or defaults)
         orig_time_formatted = orig_time_input if orig_time_input else format_time(pred_time_seconds)
         orig_speed_formatted = f"{orig_speed_input:.1f}" if orig_speed_input is not None else f"{pred_speed_kmh:.1f}"
@@ -494,8 +542,8 @@ def calculate_performance(
             orig_speed=orig_speed_formatted,
             orig_wkg=orig_wkg_formatted,
             pred_time=format_time(pred_time_seconds),
-            pred_speed=f"{pred_speed_kmh:.1f}", 
-            pred_power=f"{calc_power:.0f}",
+            pred_speed=f"{pred_speed_kmh:.1f}{speed_warning}", 
+            pred_power=f"{calc_power:.0f}{power_warning}",
             pred_wkg=f"{pred_wkg:.1f}",
             time_diff=time_diff_str,
             gravity_watts=f"{gravity_watts:.0f}",
@@ -766,7 +814,7 @@ with gr.Blocks(title="Performance Predictor") as app:
 
 if __name__ == "__main__":
     app.launch(
-        server_name="0.0.0.0",
+        server_name="localhost",
         server_port=7860,
         share=False,
         quiet=False
