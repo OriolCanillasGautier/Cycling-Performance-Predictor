@@ -1,123 +1,300 @@
 # Cycling Performance Predictor
 
-A standalone Python application based on the Sauce4Strava performance predictor that calculates cycling performance metrics using advanced physics models.
+A Gradio-based cycling simulator that estimates either:
 
-## Features
+- **time/speed from power** (`Power → Time`), or
+- **required power from target time** (`Time → Power`).
 
-- **Power-based velocity prediction**: Calculate speed and time for a given power output
-- **Comprehensive physics model**: Includes gravity, rolling resistance, and aerodynamic forces
-- **Drafting calculations**: Simulates performance benefits of riding in groups
-- **Bike configuration**: Support for different bike types (road/MTB) and terrain surfaces
-- **Aerodynamic positioning**: CdA values for different riding positions (TT, road, climbing, upright)
-- **Environmental factors**: Accounts for elevation, wind, and slope
+The model combines gravity, rolling resistance, aerodynamics, drivetrain losses, and optional drafting effects.
+
+---
+
+## Project Structure
+
+- [perf_predictor.py](perf_predictor.py): Gradio UI, event wiring, and orchestration.
+- [cycling_physics.py](cycling_physics.py): all physics equations, helper utilities, drafting logic, and HTML builders.
+- [styles.css](styles.css): dark theme and component styling.
+- [requirements.txt](requirements.txt): Python dependencies.
+
+---
+
+## Requirements
+
+- Python **3.10+** recommended (3.8+ may work depending on dependency versions)
+- pip
+
+---
 
 ## Installation
 
-1. **Install Python** (3.8 or higher)
-   - Download from [python.org](https://www.python.org/downloads/)
-   - Make sure to check "Add Python to PATH" during installation
+### 1) Clone or open the folder
 
-2. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Run the application**:
-   ```bash
-   python perf_predictor.py
-   ```
-
-## Usage
-
-### Basic Configuration
-
-1. **Bike Configuration**:
-   - Select bike type (Road or MTB)
-   - Choose terrain (asphalt, gravel, grass, offroad, sand)
-   - Adjust Crr (coefficient of rolling resistance) if needed
-
-2. **Aerodynamics**:
-   - Set CdA (drag coefficient × frontal area) using the slider or direct input
-   - The position indicator shows your riding position based on CdA value
-
-3. **Parameters**:
-   - **Power**: Target power output in watts
-   - **Body Weight**: Your weight in kg
-   - **Gear Weight**: Bike + equipment weight in kg
-   - **Slope**: Grade percentage (positive for uphill, negative for downhill)
-   - **Distance**: Distance for time calculation in km
-   - **Elevation**: Altitude in meters (affects air density)
-   - **Wind**: Wind speed in km/h (positive for headwind)
-
-### Drafting
-
-Enable drafting to simulate riding in a group:
-- **Riders**: Number of riders in the group (2-8)
-- **Position**: Your position in the group (1 = front, higher = more draft benefit)
-
-### Understanding Results
-
-The application displays:
-- **Time**: Predicted time to complete the distance
-- **Speed**: Average speed in km/h
-- **Power/Weight**: Power-to-weight ratio in W/kg
-- **Power Breakdown**: How power is distributed between:
-  - Gravity (climbing/descending)
-  - Aerodynamic drag
-  - Rolling resistance
-
-## Physics Model
-
-The calculations are based on the fundamental equation:
-```
-Power = (Gravity Force + Rolling Resistance + Aerodynamic Drag) × Velocity / (1 - Drivetrain Loss)
+```bash
+git clone <your-repo-url>
+cd Cycling-Performance-Predictor
 ```
 
-### Force Components
+### 2) Create and activate a virtual environment
 
-1. **Gravity Force**: `F_g = m × g × sin(slope)`
-2. **Rolling Resistance**: `F_r = m × g × cos(slope) × Crr`
-3. **Aerodynamic Drag**: `F_a = 0.5 × ρ × CdA × (v + wind)²`
+Windows PowerShell:
 
-Where:
-- `m` = total mass (body + bike)
-- `g` = gravitational acceleration (9.8066 m/s²)
-- `ρ` = air density (altitude dependent)
-- `v` = velocity
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
 
-### Drafting Model
+macOS/Linux:
 
-Drafting calculations use research-based coefficients from van Druenen & Blocken (2021) to determine CdA reduction based on group size and position.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
 
-## Default Values
+### 3) Install dependencies
 
-- **CdA**: 0.40 m² (typical road position)
-- **Crr**: 0.005 (road bike on asphalt)
-- **Gear Weight**: 13 kg
-- **Drivetrain Loss**: 3.5%
+```bash
+pip install -r requirements.txt
+```
 
-## Tips
+### 4) Run the app
 
-- **CdA Values**:
-  - 0.17-0.23: Elite time trial position
-  - 0.23-0.30: Good time trial position
-  - 0.30-0.35: Road racing position
-  - 0.35-0.50: Climbing position
-  - 0.50+: Upright position
+```bash
+python perf_predictor.py
+```
 
-- **Crr Values** vary by bike type and terrain:
-  - Road bike on asphalt: 0.005
-  - Mountain bike on asphalt: 0.0065
-  - Gravel/dirt surfaces: 0.006-0.025
-  - Sand: 0.030-0.038
+Then open the local URL printed by Gradio (usually `http://localhost:7860`).
 
-## Technical Notes
+---
 
-- The velocity search algorithm finds solutions within 0.1W or 0.1% accuracy
-- Air density calculation uses standard atmosphere model
-- Settings are automatically saved to `perf_predictor_settings.json`
-- All calculations use SI units internally with unit conversion for display
+## Quick Usage
 
-## Based on Sauce4Strava
+1. Pick mode:
+   - `Power → Time`: input power, get predicted speed and time.
+   - `Time → Power`: input target time, get required power.
+2. Enter rider+bike mass:
+   - `Body Weight (kg)`
+   - `Bike / Gear Weight (kg)`
+3. Enter route/environment:
+   - `Gradient (%)`
+   - `Distance (km)`
+   - `Start Elevation (m)`
+   - `Wind (km/h)` (headwind positive, tailwind negative)
+4. Set resistance model:
+   - bike type + terrain (prefills `Crr`)
+   - `CdA`
+5. Optional: enable drafting.
+6. Click **Calculate Performance**.
 
-This application reimplements the performance predictor from the Sauce4Strava browser extension, maintaining the same physics calculations and accuracy while providing a standalone desktop experience.
+---
+
+## Physics Model (Detailed)
+
+All internals use SI units.
+
+### 1) Air density vs elevation
+
+$$
+\rho(h) = 1.225 \cdot e^{-h/8400}
+$$
+
+where $h$ is elevation in meters.
+
+### 2) Forces
+
+Let:
+
+- $m$: total mass (rider + bike/gear), kg
+- $g = 9.8066\ \text{m/s}^2$
+- $s$: grade as decimal (`Gradient (%) / 100`)
+- $C_{rr}$: rolling resistance coefficient
+- $C_dA$: drag area (m²)
+- $v$: ground speed (m/s)
+- $w$: wind speed (m/s), positive = headwind
+
+#### Gravity force
+
+Grade is converted to angle via $\theta = \arctan(s)$:
+
+$$
+F_g = m g \sin(\arctan(s))
+$$
+
+#### Rolling resistance force
+
+$$
+F_r = m g \cos(\arctan(s)) C_{rr}
+$$
+
+#### Aerodynamic drag force
+
+Relative air speed:
+
+$$
+v_r = v + w
+$$
+
+Drag:
+
+$$
+F_a = \frac{1}{2}\rho C_dA\, v_r\,|v_r|
+$$
+
+Using $v_r|v_r|$ preserves direction/sign behavior correctly.
+
+### 3) Power model
+
+With drivetrain loss fraction $L$ (default `0.035`):
+
+$$
+P = (F_g + F_r + F_a)\cdot \frac{v}{1-L}
+$$
+
+The app also returns component powers (`gravity`, `aero`, `rolling`) and their percentage split of positive-resistance power.
+
+---
+
+## Two Calculation Modes
+
+### `Power → Time`
+
+Given target power, the solver finds velocity using binary search (`cycling_power_velocity_search`) and computes:
+
+$$
+t = \frac{d}{v}
+$$
+
+where $d$ is distance in meters.
+
+### `Time → Power`
+
+Given target time, it computes target velocity directly:
+
+$$
+v = \frac{d}{t}
+$$
+
+Then evaluates the power equation at that velocity.
+
+---
+
+## Elevation Handling
+
+The UI asks for **Start Elevation (m)**. The model uses **average route elevation** for air density, computed as:
+
+$$
+h_{avg} = h_{start} + \frac{\Delta h}{2},\quad \Delta h = d_{horiz}\cdot s
+$$
+
+where:
+
+- $d_{horiz}$ is distance in meters,
+- $s$ is decimal grade.
+
+Implemented in `compute_avg_elevation()`.
+
+---
+
+## Drafting Model
+
+When drafting is enabled, CdA is scaled by a reduction factor based on:
+
+- number of riders,
+- rider position,
+- optional rotating paceline duty cycle.
+
+Front rider has no reduction (factor = 1.0). Riders behind get lower effective drag (factor < 1.0). The app also estimates group power distribution and displays rider cards.
+
+---
+
+## Inputs and Units
+
+- Power: watts (W)
+- Target time: `MM:SS` or `H:MM:SS`
+- Weights: kilograms (kg)
+- Gradient: percent (%)
+- Distance: kilometers (km)
+- Start elevation: meters (m)
+- Wind: km/h in UI, converted to m/s internally
+- CdA: m²
+- Crr: unitless
+
+---
+
+## Defaults / Presets
+
+Common defaults in UI:
+
+- CdA: `0.40`
+- Crr (road asphalt): `0.0050`
+- Body weight: `70 kg`
+- Bike/gear weight: `8.0 kg`
+- Distance: `10 km`
+- Drivetrain loss: `3.5%` (in model)
+
+Terrain presets are provided for both `road` and `mtb` in [cycling_physics.py](cycling_physics.py).
+
+---
+
+## Output Interpretation
+
+- **Summary cards**: mode, speed/time, power/wkg, drafting status.
+- **Predicted performance**: key outcome for selected mode.
+- **Power details**:
+  - gravity power (climbing load),
+  - aerodynamic power,
+  - rolling power,
+  - each with W, W/kg, and percentage.
+- **Drafting section** (when enabled): group power, variance, and rider visualization.
+
+Warnings are shown for extreme combinations (e.g., very low speed on steep gradients, very high W/kg demands).
+
+---
+
+## Running in Development
+
+The app launches with:
+
+```python
+app.launch(server_name="localhost", server_port=7860, share=False, quiet=False)
+```
+
+If port 7860 is busy, change `server_port` in [perf_predictor.py](perf_predictor.py).
+
+---
+
+## Troubleshooting
+
+### `ModuleNotFoundError: No module named 'gradio'`
+
+Install dependencies in the active environment:
+
+```bash
+pip install -r requirements.txt
+```
+
+### PowerShell blocks script activation
+
+Run once (current user):
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+Then reactivate `.venv`.
+
+### Gradio output mismatch error
+
+If you modify UI outputs, ensure the return tuple length in `calculate_performance()` and `_error()` exactly matches `_outputs`.
+
+---
+
+## Notes
+
+- This tool is an engineering approximation, not a lab-grade physiological model.
+- Real-world performance is influenced by additional factors (fatigue, transient efforts, yaw angle, tire pressure, drivetrain specifics, road texture variability, etc.).
+
+---
+
+## License
+
+See [LICENSE](LICENSE).

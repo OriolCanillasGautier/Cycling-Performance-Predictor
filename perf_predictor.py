@@ -1,821 +1,657 @@
 #!/usr/bin/env python3
 """
-Cycling Performance Predictor
-Exact replica of Sauce4Strava's performance predictor with reverse calculation mode
+Cycling Performance Predictor — NiceGUI UI.
+Clean Material-Design interface with full i18n support (EN / CA / FR).
 """
 
-import gradio as gr
-import math
-from typing import Dict, List, Tuple, Optional, NamedTuple
+import json
+import os
+from pathlib import Path
+from nicegui import app, ui
 
-class PowerEstimate(NamedTuple):
-    """Result of power estimation calculations"""
-    g_force: float
-    r_force: float
-    a_force: float
-    force: float
-    g_watts: float
-    r_watts: float
-    a_watts: float
-    watts: float
-    velocity: float
+from cycling_physics import (
+    CyclingPhysics,
+    TERRAIN_CRR,
+    cycling_draft_drag_reduction,
+    format_time,
+    parse_time_input,
+    compute_avg_elevation,
+    calculate_cyclist_powers,
+)
 
-class CyclingPhysics:
-    """Cycling physics calculations based on Sauce4Strava implementation"""
-    
-    @staticmethod
-    def air_density(elevation: float) -> float:
-        """Calculate air density based on elevation (m)"""
-        return 1.225 * math.exp(-elevation / 8400)
-    
-    @staticmethod
-    def gravity_force(slope: float, weight: float) -> float:
-        """Calculate gravitational force component (N)"""
-        return weight * 9.8066 * slope
-    
-    @staticmethod
-    def rolling_resistance_force(slope: float, weight: float, crr: float) -> float:
-        """Calculate rolling resistance force (N)"""
-        return weight * 9.8066 * math.cos(math.atan(slope)) * crr
-    
-    @staticmethod
-    def aero_drag_force(cda: float, air_density: float, velocity: float, wind: float = 0) -> float:
-        """Calculate aerodynamic drag force (N)"""
-        relative_velocity = velocity + wind
-        return 0.5 * air_density * cda * relative_velocity * abs(relative_velocity)
-    
-    @staticmethod
-    def cycling_power_estimate(velocity: float, slope: float, weight: float, 
-                             crr: float, cda: float, elevation: float = 0, 
-                             wind: float = 0, loss: float = 0.035) -> PowerEstimate:
-        """Estimate power required for given velocity and conditions"""
-        invert = -1 if velocity < 0 else 1
-        
-        fg = CyclingPhysics.gravity_force(slope, weight)
-        fr = CyclingPhysics.rolling_resistance_force(slope, weight, crr) * invert
-        fa = CyclingPhysics.aero_drag_force(cda, CyclingPhysics.air_density(elevation), velocity, wind)
-        
-        v_factor = velocity / (1 - loss)
-        
-        return PowerEstimate(
-            g_force=fg,
-            r_force=fr,
-            a_force=fa,
-            force=fg + fr + fa,
-            g_watts=fg * v_factor * invert,
-            r_watts=fr * v_factor * invert,
-            a_watts=fa * v_factor * invert,
-            watts=(fg + fr + fa) * v_factor * invert,
-            velocity=velocity
-        )
-    
-    @staticmethod
-    def cycling_power_velocity_search(power: float, slope: float, weight: float,
-                                    crr: float, cda: float, elevation: float = 0,
-                                    wind: float = 0, loss: float = 0.035) -> Optional[PowerEstimate]:
-        """Find the fastest positive velocity for the target power"""
-        best_estimate = None
-        best_diff = float('inf')
-        
-        # Search range -50 to +50 m/s with 0.01 m/s precision
-        for v in range(-5000, 5001, 1):
-            velocity = v / 100.0
-            
-            if velocity <= 0:
-                continue
-                
-            estimate = CyclingPhysics.cycling_power_estimate(
-                velocity, slope, weight, crr, cda, elevation, wind, loss
-            )
-            
-            diff = abs(estimate.watts - power)
-            if diff < best_diff:
-                best_diff = diff
-                best_estimate = estimate
-            
-            # Early exit if we found a very close match
-            if diff < 0.1:
-                break
-        
-        # Always return the best estimate we found (no tolerance check)
-        return best_estimate
-    
-    @staticmethod
-    def cycling_time_power_search(target_time: float, distance: float, slope: float, weight: float,
-                                crr: float, cda: float, elevation: float = 0,
-                                wind: float = 0, loss: float = 0.035) -> Optional[PowerEstimate]:
-        """Find the power required for the target time over given distance"""
-        target_velocity = distance / target_time  # m/s
-        
-        # First try: Direct calculation estimate
-        air_density = 1.225 * math.exp(-elevation / 8400)
-        fg = weight * 9.8066 * slope
-        fr = weight * 9.8066 * math.cos(math.atan(slope)) * crr
-        fa = 0.5 * air_density * cda * target_velocity * abs(target_velocity)
-        
-        estimated_power = (fg + fr + fa) * target_velocity / (1 - loss)
-        
-        # Test if this estimate works
-        test_result = CyclingPhysics.cycling_power_velocity_search(
-            estimated_power, slope, weight, crr, cda, elevation, wind, loss
-        )
-        
-        if test_result and abs(test_result.velocity - target_velocity) < target_velocity * 0.1:
-            return test_result
-        
-        # If direct estimate doesn't work, try powers around it
-        for power_multiplier in [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0, 2.5, 3.0]:
-            test_power = estimated_power * power_multiplier
-            if test_power < 10 or test_power > 3000:
-                continue
-                
-            result = CyclingPhysics.cycling_power_velocity_search(
-                test_power, slope, weight, crr, cda, elevation, wind, loss
-            )
-            
-            if result and abs(result.velocity - target_velocity) < target_velocity * 0.15:
-                return result
-        
-        # Last resort: Try a range of fixed powers
-        for test_power in [50, 75, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 1000]:
-            result = CyclingPhysics.cycling_power_velocity_search(
-                test_power, slope, weight, crr, cda, elevation, wind, loss
-            )
-            
-            if result and abs(result.velocity - target_velocity) < target_velocity * 0.2:
-                return result
-        
-        # If nothing works, create a manual estimate
-        return CyclingPhysics.cycling_power_estimate(
-            target_velocity, slope, weight, crr, cda, elevation, wind, loss
-        )
+# ── Language packs ──────────────────────────────────────────────────────────
 
-def cycling_draft_drag_reduction(riders: int, position: int) -> float:
-    """Calculate drag reduction factor for drafting - FIXED"""
-    if riders < 2 or position < 1 or position > riders:
-        return 1.0
-    
-    # Improved coefficients based on research - more realistic values
-    coefficients = {
-        2: {"base": 0.70, "decay": 0.85},
-        3: {"base": 0.65, "decay": 0.80},
-        4: {"base": 0.62, "decay": 0.78},
-        5: {"base": 0.60, "decay": 0.76},
-        6: {"base": 0.58, "decay": 0.74},
-        7: {"base": 0.56, "decay": 0.72},
-        8: {"base": 0.55, "decay": 0.70},
-    }
-    
-    if riders > 8:
-        # Scale position proportionally for larger groups
-        scaled_position = max(1, min(8, int(8 * position / riders)))
-        riders = 8
-        position = scaled_position
-    
-    c = coefficients[riders]
-    if position == 1:
-        return 1.0  # No draft benefit at front
-    else:
-        # More realistic progressive benefit calculation
-        # Position 2 gets most benefit, further back gets progressively less
-        max_benefit = c["base"]
-        position_factor = (position - 1) / (riders - 1)  # 0 to 1 scale
-        draft_reduction = max_benefit + (1 - max_benefit) * (position_factor * c["decay"])
-        return min(1.0, draft_reduction)
+_LANG_PATH = os.path.join(os.path.dirname(__file__), "languagepacks.json")
+with open(_LANG_PATH, encoding="utf-8") as _f:
+    LANG = json.load(_f)
 
-TERRAIN_CRR = {
-    "road": {
-        "asphalt": 0.0050,
-        "gravel": 0.0060, 
-        "grass": 0.0070,
-        "offroad": 0.0200,
-        "sand": 0.0300
-    },
-    "mtb": {
-        "asphalt": 0.0065,
-        "gravel": 0.0075,
-        "grass": 0.0090,
-        "offroad": 0.0255,
-        "sand": 0.0380
-    }
-}
+LANG_OPTIONS = {"en": "English", "ca": "Català", "fr": "Français"}
 
-def get_cda_position(cda):
-    """Get riding position description based on CdA"""
+_FAVICON = Path(__file__).parent / "favicon.svg"
+app.add_static_files("/static", Path(__file__).parent)
+
+
+def t(key: str, lang: str = "en") -> str:
+    return LANG.get(lang, LANG["en"]).get(key, LANG["en"].get(key, key))
+
+
+def cda_position(cda: float, lang: str) -> str:
     if cda < 0.23:
-        return "Elite time trial equipment and positioning"
-    elif cda < 0.30:
-        return "Good time trial equipment and positioning / Triathlon"
-    elif cda < 0.35:
-        return "Road bike racing positions / Drop bar lows"
-    elif cda < 0.50:
-        return "Road bike climbing positions / Mountain bike XC"
-    else:
-        return "Upright position with casual clothing"
+        return t("cda_position_1", lang)
+    if cda < 0.30:
+        return t("cda_position_2", lang)
+    if cda < 0.35:
+        return t("cda_position_3", lang)
+    if cda < 0.50:
+        return t("cda_position_4", lang)
+    return t("cda_position_5", lang)
 
-def format_time(seconds):
-    """Format time in seconds to MM:SS or H:MM:SS"""
-    if seconds <= 0:
-        return "Invalid"
-    
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    
-    if hours > 0:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    else:
-        return f"{minutes}:{secs:02d}"
 
-def parse_time_input(time_str):
-    """Parse time input (MM:SS or H:MM:SS) to seconds - FIXED"""
-    if not time_str or time_str.strip() == "":
-        return None
-    
-    try:
-        time_parts = time_str.strip().split(':')
-        
-        if len(time_parts) == 2:
-            # Format MM:SS (minutes can be > 59)
-            minutes = int(time_parts[0])
-            seconds = int(time_parts[1])
-            
-            # Validate seconds
-            if seconds < 0 or seconds >= 60:
-                return None
-                
-            return minutes * 60 + seconds
-            
-        elif len(time_parts) == 3:
-            # Format H:MM:SS
-            hours = int(time_parts[0])
-            minutes = int(time_parts[1])
-            seconds = int(time_parts[2])
-            
-            # Validate minutes and seconds
-            if minutes < 0 or minutes >= 60 or seconds < 0 or seconds >= 60:
-                return None
-                
-            return hours * 3600 + minutes * 60 + seconds
-        else:
-            return None
-            
-    except ValueError:
-        # Handle non-numeric input
-        return None
-    except Exception:
-        return None
+# ── Core calculation ────────────────────────────────────────────────────────
 
-def calculate_cyclist_powers(riders, position, rotating, work_pct, power, cda, draft_reduction_func):
-    """Calculate individual cyclist powers for drafting visualization - INSTANT SNAPSHOT"""
+def run_calculation(state: dict, lang: str) -> dict:
+    body_w = state["body_weight"]
+    gear_w = state["gear_weight"]
+    if body_w <= 0 or gear_w < 0 or state["distance"] <= 0:
+        return {"error": t("error_no_solution", lang)}
+
+    total_weight = body_w + gear_w
+    slope_dec = state["slope"] / 100.0
+    dist_m = state["distance"] * 1000
+    wind_ms = state["wind"] / 3.6
+    elevation = compute_avg_elevation(
+        state["start_elevation"], state["slope"], state["distance"]
+    )
+
+    cda_val = state["cda"]
+    effective_cda = cda_val
+    draft_info = ""
+    group_power = 0
     cyclist_data = []
-    
-    if rotating:
-        # Rotating paceline - show CURRENT instant snapshot, not averages
-        front_time = work_pct / 100.0
-        
-        # Calculate the power needed at front (no draft) and at back (with draft)
-        back_draft_reduction = draft_reduction_func(riders, riders)  # Maximum draft benefit
-        
-        # Back-calculate what the front/back powers are from your average power
-        front_power = power / (front_time + (1 - front_time) * back_draft_reduction)
-        back_power = front_power * back_draft_reduction
-        
-        # Show a snapshot: currently position 1 is at front, others draft
-        for i in range(1, riders + 1):
-            if i == 1:
-                # Currently at front - high power, no draft
-                current_power = front_power
-                is_front = True
-            else:
-                # Currently drafting - low power, with draft benefit
-                draft_factor = draft_reduction_func(riders, i)
-                current_power = front_power * draft_factor
-                is_front = False
-            
-            # Only show time percentage for YOUR position (not current front rider)
-            show_time_pct = work_pct if i == position else 0
-            
-            cyclist_data.append({
-                "position": i,
-                "power": int(current_power),
-                "time_pct": show_time_pct,  # Only YOUR position shows time %
-                "is_you": i == position
-            })
-    else:
-        # Static positions - calculate actual power needed for each position
-        # The "power" parameter is what YOU are putting out
-        # Others need different power based on their draft position
-        your_draft_factor = draft_reduction_func(riders, position)
-        base_power_needed = power / your_draft_factor  # Power needed without any draft
-        
-        for i in range(1, riders + 1):
-            draft_factor = draft_reduction_func(riders, i)
-            # Power this position needs = base power * their draft factor
-            estimated_power = base_power_needed * draft_factor
-            cyclist_data.append({
-                "position": i,
-                "power": int(estimated_power),
-                "time_pct": 0,
-                "is_you": i == position
-            })
-    
-    return cyclist_data
 
-def create_cyclist_visualization(cyclist_data):
-    """Create HTML visualization of cyclists with their power values - IMPROVED ICONS"""
-    if not cyclist_data:
-        return ""
-    
-    html = '''
-    <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding: 15px; 
-                background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); 
-                border-radius: 12px; border: 1px solid #dee2e6;">
-    '''
-    
-    for cyclist in cyclist_data:
-        you_indicator = " (You)" if cyclist["is_you"] else ""
-        time_info = f"<div style='font-size: 10px; color: #666; margin-top: 2px;'>{cyclist['time_pct']:.0f}% front</div>" if cyclist["time_pct"] > 0 else ""
-        
-        # Better cyclist emoji and styling
-        rider_emoji = "🚴‍♂️" if cyclist["position"] % 2 == 1 else "🚴‍♀️"
-        border_color = "#007acc" if cyclist["is_you"] else "#6c757d"
-        background_color = "#e3f2fd" if cyclist["is_you"] else "#ffffff"
-        
-        html += f'''
-        <div style="text-align: center; padding: 8px; 
-                    border: 2px solid {border_color}; 
-                    border-radius: 10px; 
-                    background: {background_color}; 
-                    min-width: 70px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-            <div style="font-size: 28px; margin-bottom: 4px;">{rider_emoji}</div>
-            <div style="font-size: 11px; font-weight: bold; color: #333;">
-                Pos. {cyclist["position"]}{you_indicator}
-            </div>
-            <div style="font-size: 13px; color: #000; font-weight: 600; margin-top: 2px;">
-                {cyclist["power"]}w
-            </div>
-            {time_info}
-        </div>
-        '''
-    
-    html += '</div>'
-    return html
-
-def calculate_performance(
-    # Calculation mode
-    calc_mode,
-    # Original performance inputs (user-editable)
-    orig_power, orig_time_input, orig_speed_input,
-    # Prediction inputs
-    power, target_time_input, body_weight, gear_weight, slope, distance, elevation, wind,
-    cda, crr, drafting, riders, position, rotating, work_pct, bike_type, terrain
-):
-    """Main calculation function with reverse calculation support"""
-    try:
-        if body_weight <= 0 or gear_weight < 0 or distance <= 0:
-            return create_error_output()
-        
-        # Convert units
-        total_weight = body_weight + gear_weight
-        slope_decimal = slope / 100.0
-        distance_m = distance * 1000
-        wind_ms = wind / 3.6
-        
-        # Apply drafting
-        effective_cda = cda
-        group_power = 0
-        power_variance = 0
-        draft_info = ""
-        cyclist_viz = ""
-        
-        if drafting and riders >= 2:
-            if rotating:
-                # Rotating paceline - corrected calculation
-                front_time = work_pct / 100.0
-                # Average draft reduction over time
-                back_draft_reduction = cycling_draft_drag_reduction(riders, riders)
-                avg_draft_reduction = front_time * 1.0 + (1 - front_time) * back_draft_reduction
-                effective_cda = cda * avg_draft_reduction
-                draft_info = f"Rotating: {work_pct:.0f}% time at front"
-                
-                # Calculate power variance (difference between front and back)
-                front_power_factor = 1.0
-                back_power_factor = back_draft_reduction
-                power_variance = abs(1/back_power_factor - 1/front_power_factor) / (1/back_power_factor) * 100
-                
-            else:
-                # Static position
-                draft_reduction = cycling_draft_drag_reduction(riders, position)
-                effective_cda = cda * draft_reduction
-                draft_info = f"Position {position}/{riders} (draft: {(1-draft_reduction)*100:.0f}%)"
-                
-                # Calculate power variance for static positions (front vs back)
-                front_draft_factor = cycling_draft_drag_reduction(riders, 1)  # Position 1 (front)
-                back_draft_factor = cycling_draft_drag_reduction(riders, riders)  # Last position
-                if front_draft_factor > 0 and back_draft_factor > 0:
-                    power_variance = abs((1/back_draft_factor) - (1/front_draft_factor)) / (1/back_draft_factor) * 100
-        
-        # Calculate based on mode
-        if calc_mode == "Power → Time":
-            if power <= 0:
-                return create_error_output("Power must be greater than 0")
-                
-            # Calculate predicted performance (time from power)
-            predicted_estimate = CyclingPhysics.cycling_power_velocity_search(
-                power, slope_decimal, total_weight, crr, effective_cda, elevation, wind_ms
-            )
-            
-            if predicted_estimate and predicted_estimate.velocity > 0:
-                pred_time_seconds = distance_m / predicted_estimate.velocity
-                pred_speed_kmh = predicted_estimate.velocity * 3.6
-                pred_power = power
-                calc_power = power
-                
-                # Create cyclist visualization for drafting
-                if drafting and riders >= 2:
-                    cyclist_data = calculate_cyclist_powers(riders, position, rotating, work_pct, power, cda, cycling_draft_drag_reduction)
-                    cyclist_viz = create_cyclist_visualization(cyclist_data)
-                    if cyclist_data:
-                        group_power = sum(c["power"] for c in cyclist_data) / len(cyclist_data)
-            else:
-                return create_error_output("No valid solution found for these parameters")
-                
-        else:  # Time → Power
-            target_time_seconds = parse_time_input(target_time_input)
-            if not target_time_seconds or target_time_seconds <= 0:
-                return create_error_output("Please enter a valid target time (MM:SS or H:MM:SS)")
-            
-            # Calculate required power for target time
-            predicted_estimate = CyclingPhysics.cycling_time_power_search(
-                target_time_seconds, distance_m, slope_decimal, total_weight, crr, effective_cda, elevation, wind_ms
-            )
-            
-            if predicted_estimate and predicted_estimate.velocity > 0:
-                pred_time_seconds = target_time_seconds
-                pred_speed_kmh = predicted_estimate.velocity * 3.6
-                pred_power = predicted_estimate.watts
-                calc_power = pred_power
-                
-                # Create cyclist visualization for drafting
-                if drafting and riders >= 2:
-                    cyclist_data = calculate_cyclist_powers(riders, position, rotating, work_pct, calc_power, cda, cycling_draft_drag_reduction)
-                    cyclist_viz = create_cyclist_visualization(cyclist_data)
-                    if cyclist_data:
-                        group_power = sum(c["power"] for c in cyclist_data) / len(cyclist_data)
-            else:
-                return create_error_output("No valid solution found for this target time")
-        
-        pred_wkg = calc_power / total_weight
-        
-        # Check for unrealistic values and add warnings
-        speed_warning = ""
-        power_warning = ""
-        
-        # Speed warnings with error percentages
-        if pred_speed_kmh < 5.0:  # Less than 5 km/h is walking pace
-            walking_speed = 5.0
-            error_pct = abs(pred_speed_kmh - walking_speed) / walking_speed * 100
-            speed_warning = f" ⚠️ Walking pace - check parameters ({error_pct:.0f}% below 5 km/h)"
-        elif pred_speed_kmh < 8.0 and slope > 20:  # Very steep and very slow
-            reasonable_speed = 8.0
-            error_pct = abs(pred_speed_kmh - reasonable_speed) / reasonable_speed * 100
-            speed_warning = f" ⚠️ Extremely steep - consider walking ({error_pct:.0f}% below 8 km/h)"
-        elif pred_speed_kmh < 10.0 and slope > 15:  # Steep and slow
-            reasonable_speed = 10.0
-            error_pct = abs(pred_speed_kmh - reasonable_speed) / reasonable_speed * 100
-            speed_warning = f" ⚠️ Very steep gradient ({error_pct:.0f}% below 10 km/h)"
-        
-        # Power warnings with w/kg thresholds
-        if pred_wkg > 8.0:  # More than 8 w/kg is elite level
-            elite_threshold = 8.0
-            error_pct = (pred_wkg - elite_threshold) / elite_threshold * 100
-            power_warning = f" ⚠️ Elite power level! ({error_pct:.0f}% above 8 w/kg)"
-        elif pred_wkg > 6.0:  # More than 6 w/kg is very high
-            high_threshold = 6.0
-            error_pct = (pred_wkg - high_threshold) / high_threshold * 100
-            power_warning = f" ⚠️ Very high power required ({error_pct:.0f}% above 6 w/kg)"
-        
-        # Original performance (user inputs or defaults)
-        orig_time_formatted = orig_time_input if orig_time_input else format_time(pred_time_seconds)
-        orig_speed_formatted = f"{orig_speed_input:.1f}" if orig_speed_input is not None else f"{pred_speed_kmh:.1f}"
-        orig_wkg_formatted = f"{orig_power / total_weight:.1f}" if orig_power and orig_power > 0 else f"{pred_wkg:.1f}"
-        
-        # Time difference calculation
-        time_diff_str = ""
-        if orig_time_input:
-            orig_time_seconds = parse_time_input(orig_time_input)
-            if orig_time_seconds:
-                time_diff = pred_time_seconds - orig_time_seconds
-                if abs(time_diff) > 1:
-                    if time_diff > 0:
-                        time_diff_str = f" (+{format_time(abs(time_diff))})"
-                    else:
-                        time_diff_str = f" (-{format_time(abs(time_diff))})"
-        
-        # Power breakdown - fixed calculation
-        gravity_watts = predicted_estimate.g_watts
-        aero_watts = predicted_estimate.a_watts  
-        rolling_watts = predicted_estimate.r_watts
-        
-        # Calculate percentages based on power components that require energy
-        positive_components = []
-        if gravity_watts > 0:  # Climbing
-            positive_components.append(gravity_watts)
-        if aero_watts > 0:  # Always positive (drag)
-            positive_components.append(aero_watts)
-        if rolling_watts > 0:  # Always positive (resistance)
-            positive_components.append(rolling_watts)
-        
-        total_positive_power = sum(positive_components)
-        
-        if total_positive_power > 0:
-            gravity_pct = (gravity_watts / total_positive_power * 100) if gravity_watts > 0 else 0
-            aero_pct = aero_watts / total_positive_power * 100
-            rolling_pct = rolling_watts / total_positive_power * 100
+    if state["drafting"] and state["riders"] >= 2:
+        riders = state["riders"]
+        pos = state["position"]
+        if state["rotating"]:
+            ft = state["work_pct"] / 100.0
+            bdr = cycling_draft_drag_reduction(riders, riders)
+            effective_cda = cda_val * (ft + (1 - ft) * bdr)
+            draft_info = t("draft_rotating", lang).format(work_pct=state["work_pct"])
         else:
-            gravity_pct = aero_pct = rolling_pct = 0
-        
-        return create_success_output(
-            orig_time=orig_time_formatted,
-            orig_speed=orig_speed_formatted,
-            orig_wkg=orig_wkg_formatted,
-            pred_time=format_time(pred_time_seconds),
-            pred_speed=f"{pred_speed_kmh:.1f}{speed_warning}", 
-            pred_power=f"{calc_power:.0f}{power_warning}",
-            pred_wkg=f"{pred_wkg:.1f}",
-            time_diff=time_diff_str,
-            gravity_watts=f"{gravity_watts:.0f}",
-            gravity_wkg=f"{gravity_watts / total_weight:.1f}",
-            gravity_pct=f"{gravity_pct:.0f}",
-            aero_watts=f"{aero_watts:.0f}",
-            aero_wkg=f"{aero_watts / total_weight:.1f}",
-            aero_pct=f"{aero_pct:.0f}",
-            rolling_watts=f"{rolling_watts:.0f}",
-            rolling_wkg=f"{rolling_watts / total_weight:.1f}",
-            rolling_pct=f"{rolling_pct:.0f}",
-            position_desc=get_cda_position(cda),
-            group_power=f"{group_power:.0f}" if drafting and group_power > 0 else "",
-            power_variance=f"{power_variance:.0f}" if drafting and power_variance > 0 else "",
-            draft_info=draft_info,
-            cyclist_viz=cyclist_viz,
-            show_drafting=drafting,
-            calc_mode=calc_mode,
-            status="valid"
+            dr = cycling_draft_drag_reduction(riders, pos)
+            effective_cda = cda_val * dr
+            draft_info = t("draft_position", lang).format(
+                position=pos, riders=riders, draft_pct=(1 - dr) * 100
+            )
+
+    mode = state["calc_mode"]
+    if mode == "power_to_time":
+        pw = state["power"]
+        if pw <= 0:
+            return {"error": t("error_power_positive", lang)}
+        est = CyclingPhysics.cycling_power_velocity_search(
+            pw, slope_dec, total_weight, state["crr"], effective_cda, elevation, wind_ms
         )
-            
-    except Exception as e:
-        return create_error_output(f"Error: {str(e)}")
+        if not est or est.velocity <= 0:
+            return {"error": t("error_no_solution", lang)}
+        pred_time_s = dist_m / est.velocity
+        pred_speed = est.velocity * 3.6
+        calc_power = pw
+    else:
+        ts = parse_time_input(state["target_time"])
+        if not ts or ts <= 0:
+            return {"error": t("error_invalid_target_time", lang)}
+        est = CyclingPhysics.cycling_time_power_search(
+            ts, dist_m, slope_dec, total_weight, state["crr"],
+            effective_cda, elevation, wind_ms
+        )
+        if not est or est.velocity <= 0:
+            return {"error": t("error_no_solution_target", lang)}
+        pred_time_s = ts
+        pred_speed = est.velocity * 3.6
+        calc_power = est.watts
 
-def create_success_output(**kwargs):
-    """Create successful calculation output"""
-    return (
-        kwargs["status"],
-        kwargs["orig_time"], kwargs["orig_speed"], kwargs["orig_wkg"],
-        kwargs["pred_time"], kwargs["pred_speed"], kwargs["pred_power"], kwargs["pred_wkg"], kwargs["time_diff"],
-        f"{kwargs['gravity_watts']}w\n{kwargs['gravity_wkg']}w/kg ({kwargs['gravity_pct']}%)",
-        f"{kwargs['aero_watts']}w\n{kwargs['aero_wkg']}w/kg ({kwargs['aero_pct']}%)", 
-        f"{kwargs['rolling_watts']}w\n{kwargs['rolling_wkg']}w/kg ({kwargs['rolling_pct']}%)",
-        kwargs["position_desc"],
-        kwargs["group_power"] + "w" if kwargs["group_power"] else "",
-        kwargs["power_variance"] + "%" if kwargs["power_variance"] else "",
-        kwargs["draft_info"],
-        kwargs["cyclist_viz"],
-        gr.update(visible=kwargs["show_drafting"])
+    if state["drafting"] and state["riders"] >= 2:
+        cyclist_data = calculate_cyclist_powers(
+            state["riders"], state["position"], state["rotating"],
+            state["work_pct"], calc_power, cda_val, cycling_draft_drag_reduction,
+        )
+        if cyclist_data:
+            group_power = sum(c["power"] for c in cyclist_data) / len(cyclist_data)
+
+    pred_wkg = calc_power / total_weight
+    gw, aw, rw = est.g_watts, est.a_watts, est.r_watts
+    pos_sum = sum(x for x in (gw, aw, rw) if x > 0)
+    gp = gw / pos_sum * 100 if gw > 0 and pos_sum else 0
+    ap = aw / pos_sum * 100 if aw > 0 and pos_sum else 0
+    rp = rw / pos_sum * 100 if rw > 0 and pos_sum else 0
+
+    tdiff = ""
+    if state.get("orig_time"):
+        ots = parse_time_input(state["orig_time"])
+        if ots:
+            d = pred_time_s - ots
+            if abs(d) > 1:
+                tdiff = (
+                    f" (+{format_time(abs(d))})"
+                    if d > 0
+                    else f" (-{format_time(abs(d))})"
+                )
+
+    return {
+        "time": format_time(pred_time_s),
+        "speed": f"{pred_speed:.1f}",
+        "power": f"{calc_power:.0f}",
+        "wkg": f"{pred_wkg:.2f}",
+        "time_diff": tdiff,
+        "gravity_w": f"{gw:.0f}",
+        "gravity_wkg": f"{gw / total_weight:.1f}",
+        "gravity_pct": f"{gp:.0f}",
+        "aero_w": f"{aw:.0f}",
+        "aero_wkg": f"{aw / total_weight:.1f}",
+        "aero_pct": f"{ap:.0f}",
+        "rolling_w": f"{rw:.0f}",
+        "rolling_wkg": f"{rw / total_weight:.1f}",
+        "rolling_pct": f"{rp:.0f}",
+        "draft_info": draft_info,
+        "group_power": f"{group_power:.0f}" if group_power else "",
+        "cyclist_data": cyclist_data,
+        "orig_power": state.get("orig_power", ""),
+        "orig_time": state.get("orig_time", ""),
+        "orig_speed": state.get("orig_speed", ""),
+        "total_weight": total_weight,
+    }
+
+
+# ── UI Page ─────────────────────────────────────────────────────────────────
+
+@ui.page("/")
+def main_page():
+    # Reactive state
+    state = {
+        "lang": "en",
+        "calc_mode": "power_to_time",
+        "power": 250,
+        "target_time": "",
+        "orig_power": 250,
+        "orig_time": "",
+        "orig_speed": 0,
+        "body_weight": 70,
+        "gear_weight": 8.0,
+        "slope": 0,
+        "distance": 10,
+        "start_elevation": 0,
+        "wind": 0,
+        "cda": 0.40,
+        "crr": 0.0050,
+        "bike_type": "road",
+        "terrain": "asphalt",
+        "drafting": False,
+        "riders": 2,
+        "position": 2,
+        "rotating": False,
+        "work_pct": 50,
+    }
+
+    # Convenience
+    def L():
+        return state["lang"]
+
+    # Dark background
+    ui.query("body").style("background:#0b1120")
+
+    # ── HEADER — must be direct page child ──
+    with ui.header().classes(
+        "items-center justify-between px-6 py-3 shadow-lg"
+    ).style("background:#0f172a"):
+        header_title = ui.label(t("app_title", L())).classes(
+            "text-xl font-bold text-white tracking-tight"
+        )
+        ui.select(
+            options=LANG_OPTIONS,
+            value=state["lang"],
+            on_change=lambda e: _change_lang(e.value),
+        ).props('dense outlined dark color="blue-4"').classes("min-w-[140px]")
+
+    # ── REFRESHABLE BODY ──
+    @ui.refreshable
+    def body_content():
+        lang = L()
+
+        # Subtitle
+        with ui.column().classes("w-full max-w-6xl mx-auto px-4 mt-4 mb-1"):
+            ui.label(t("app_subtitle", lang)).classes(
+                "text-gray-400 text-sm italic"
+            )
+
+        with ui.column().classes("w-full max-w-6xl mx-auto px-4 gap-6 pb-8"):
+            # Mode selector
+            with ui.card().classes("w-full").style(
+                "background:#111827;border:1px solid #374151"
+            ):
+                with ui.card_section():
+                    ui.label(t("mode_label", lang)).classes(
+                        "text-xs uppercase tracking-wide text-gray-400 mb-2"
+                    )
+                    ui.radio(
+                        {
+                            "power_to_time": t("mode_power_time", lang),
+                            "time_to_power": t("mode_time_power", lang),
+                        },
+                        value=state["calc_mode"],
+                        on_change=lambda e: (
+                            state.__setitem__("calc_mode", e.value),
+                            body_content.refresh(),
+                        ),
+                    ).props("inline dark color=blue-6")
+
+            # Two-column layout
+            with ui.row().classes("w-full gap-6 items-start flex-wrap"):
+                # LEFT column
+                with ui.column().classes("flex-1 gap-6 min-w-[320px]"):
+                    _build_baseline(lang, state)
+                    _build_rolling(lang, state, body_content)
+                    _build_aero(lang, state, body_content)
+                    _build_drafting(lang, state, body_content)
+
+                # RIGHT column
+                with ui.column().classes("flex-1 gap-6 min-w-[320px]"):
+                    _build_prediction(lang, state)
+
+            # Calculate
+            ui.button(
+                t("calc_button", lang),
+                on_click=lambda: _calculate(),
+            ).props("unelevated color=blue-7 size=lg no-caps").classes(
+                "w-full max-w-md mx-auto mt-2 font-bold tracking-wide"
+            )
+
+    # ── Helpers ──
+    def _change_lang(val):
+        state["lang"] = val
+        header_title.text = t("app_title", val)
+        body_content.refresh()
+
+    def _calculate():
+        lang = L()
+        res = run_calculation(state, lang)
+        if "error" in res:
+            ui.notify(res["error"], type="negative", position="top")
+            return
+        _show_results_dialog(res, lang)
+
+    # First render
+    body_content()
+
+
+# ── Section card builders (module-level) ────────────────────────────────────
+
+def _heading(text: str):
+    ui.label(text).classes(
+        "text-xs uppercase tracking-wide text-blue-400 font-bold"
+        " border-b border-blue-800 pb-1 mb-2 w-full"
     )
 
-def create_error_output(message="No velocity predicted for these parameters"):
-    """Create error output"""
-    return (
-        "invalid", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", 
-        gr.update(visible=False)
-    )
 
-# Create the Gradio interface
-with gr.Blocks(title="Performance Predictor") as app:
-    
-    gr.HTML("""
-    <style>
-    .performance-predictor {
-        max-width: 1200px;
-        margin: 0 auto;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    }
-    .heading {
-        font-size: 1.2em;
-        font-weight: bold;
-        color: #333;
-        margin: 20px 0 10px 0;
-        border-bottom: 2px solid #007acc;
-        padding-bottom: 5px;
-    }
-    .calculate-btn {
-        background: #007acc !important;
-        color: white !important;
-        font-weight: bold !important;
-        font-size: 1.1em !important;
-        padding: 15px 30px !important;
-        border-radius: 8px !important;
-        margin: 20px 0 !important;
-    }
-    .mode-selector {
-        background: #f8f9fa !important;
-        border: 2px solid #007acc !important;
-        border-radius: 8px !important;
-        font-weight: bold !important;
-    }
-    </style>
-    
-    <div class="performance-predictor">
-        <h1>Performance Predictor</h1>
-        <p><em>The Performance Predictor is a cycling power calculator that lets you examine the impact of altered performance factors.</em></p>
-        <p><strong>Choose calculation mode and change parameters to see the estimated effect on performance.</strong></p>
-    </div>
-    """)
-    
-    # Calculation mode selector
-    calc_mode = gr.Radio(
-        choices=["Power → Time", "Time → Power"],
-        value="Power → Time",
-        label="Calculation Mode",
-        elem_classes="mode-selector"
-    )
-    
-    with gr.Row():
-        with gr.Column(scale=1):
-            gr.HTML('<div class="heading">Original Performance (editable):</div>')
-            
-            orig_power = gr.Number(value=250, label="Original Power (w)", minimum=0)
-            orig_time_input = gr.Textbox(value="", label="Original Time (MM:SS or H:MM:SS)", placeholder="Ex: 15:30 or 1:15:30")
-            orig_speed_input = gr.Number(value=None, label="Original Speed (km/h)", minimum=0)
-            
-            gr.HTML('<div class="heading">Rolling Resistance:</div>')
-            
-            bike_type = gr.Radio(
-                choices=["road", "mtb"],
-                value="road",
-                label="Bike"
+def _build_baseline(lang, state):
+    with ui.card().classes("w-full").style(
+        "background:#111827;border:1px solid #374151"
+    ):
+        with ui.card_section().classes("gap-4"):
+            _heading(t("section_baseline", lang))
+            ui.number(
+                label=t("label_orig_power", lang),
+                value=state["orig_power"], min=0, step=1, suffix="W",
+                on_change=lambda e: state.__setitem__("orig_power", e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                t("info_orig_power", lang)
             )
-            
-            terrain = gr.Dropdown(
-                choices=["asphalt", "gravel", "grass", "offroad", "sand"],
-                value="asphalt",
-                label="Crr / Terrain"
+            ui.input(
+                label=t("label_orig_time", lang),
+                value=state["orig_time"],
+                placeholder=t("placeholder_time_example", lang),
+                on_change=lambda e: state.__setitem__("orig_time", e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                t("info_orig_time", lang)
             )
-            
-            crr = gr.Number(
-                value=0.0050,
-                label="Crr",
-                step=0.0005,
-                minimum=0.001
+            ui.number(
+                label=t("label_orig_speed", lang),
+                value=state["orig_speed"], min=0, step=0.1, suffix="km/h",
+                on_change=lambda e: state.__setitem__("orig_speed", e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                t("info_orig_speed", lang)
             )
-            
-            gr.HTML('<div class="heading">Aerodynamic Resistance:</div>')
-            
-            cda = gr.Slider(
-                minimum=0.15,
-                maximum=0.7,
-                step=0.01,
-                value=0.40,
-                label="CdA (m²)"
-            )
-            
-            position_info = gr.Textbox(
-                value=get_cda_position(0.40),
-                label="Aerodynamic Position",
-                interactive=False
-            )
-            
-            gr.HTML('<div class="heading">Drafting:</div>')
-            
-            drafting = gr.Checkbox(label="Drafting", value=False)
-            
-            riders = gr.Slider(
-                minimum=2, maximum=8, step=1, value=2,
-                label="Riders"
-            )
-            
-            rotating = gr.Checkbox(label="Rotating / Paceline", value=False)
-            
-            work_pct = gr.Slider(
-                minimum=0, maximum=100, step=1, value=50,
-                label="Time at Front (%)",
-                visible=False
-            )
-            
-            position = gr.Slider(
-                minimum=1, maximum=8, step=1, value=2,
-                label="Position"
-            )
-        
-        with gr.Column(scale=1):
-            # Mode-dependent inputs
-            power = gr.Number(value=250, label="Power (w)", minimum=50, visible=True)
-            target_time_input = gr.Textbox(value="", label="Target Time (MM:SS or H:MM:SS)", 
-                                         placeholder="Ex: 15:30 or 1:15:30", visible=False)
-            
-            body_weight = gr.Number(value=70, label="Body Weight (kg)", minimum=30)
-            gear_weight = gr.Number(value=13.0, label="Bike/Gear Weight (kg)", minimum=5)
-            slope = gr.Number(value=0, label="Gradient (%)", step=0.1)
-            distance = gr.Number(value=10, label="Distance (km)", minimum=0.1)
-            elevation = gr.Number(value=0, label="Elevation (m)", step=50)
-            wind = gr.Number(value=0, label="Wind (km/h)", step=1)
-            
-            # Calculate button
-            calculate_btn = gr.Button("🔄 Calculate Performance", variant="primary", elem_classes="calculate-btn")
-    
-    # Results section
-    gr.HTML('<div style="margin: 25px 0;"></div>')
-    
-    with gr.Row():
-        with gr.Column():
-            gr.HTML('<div class="heading">Original Performance:</div>')
-            orig_time = gr.Textbox(label="Time", interactive=False)
-            orig_speed = gr.Textbox(label="Speed (km/h)", interactive=False)
-            orig_wkg = gr.Textbox(label="Watts/kg", interactive=False)
-            
-        with gr.Column():
-            gr.HTML('<div class="heading">Predicted Performance:</div>')
-            pred_time = gr.Textbox(label="Time", interactive=False)
-            pred_speed = gr.Textbox(label="Speed (km/h)", interactive=False)
-            pred_power = gr.Textbox(label="Power (w)", interactive=False)
-            pred_wkg = gr.Textbox(label="Watts/kg", interactive=False)
-            time_diff = gr.Textbox(label="Difference", interactive=False)
-    
-    gr.HTML('<div class="heading">Power Details:</div>')
-    
-    with gr.Row():
-        gravity_power = gr.Textbox(label="Gravity", interactive=False, lines=2)
-        aero_power = gr.Textbox(label="Aerodynamics", interactive=False, lines=2)
-        rolling_power = gr.Textbox(label="Rolling", interactive=False, lines=2)
-    
-    # Drafting section
-    with gr.Group() as drafting_section:
-        gr.HTML('<div class="heading">Drafting:</div>')
-        group_power = gr.Textbox(label="Group Power", interactive=False)
-        power_variance = gr.Textbox(label="Power Variance", interactive=False)
-        draft_info_display = gr.Textbox(label="Info", interactive=False)
-        cyclist_visualization = gr.HTML(label="Cyclists")
-    
-    status = gr.Textbox(label="Status", visible=False)
-    
-    # Event handlers
-    def update_input_visibility(mode):
-        if mode == "Power → Time":
-            return gr.Number(visible=True), gr.Textbox(visible=False)
-        else:  # Time → Power
-            return gr.Number(visible=False), gr.Textbox(visible=True)
-    
-    def update_terrain_options(bike_type_val):
-        choices = list(TERRAIN_CRR[bike_type_val].keys())
-        return gr.Dropdown(choices=choices, value=choices[0])
-    
-    def update_crr_value(bike_type_val, terrain_val):
-        if terrain_val in TERRAIN_CRR[bike_type_val]:
-            return TERRAIN_CRR[bike_type_val][terrain_val]
-        return 0.0050
-    
-    def update_position_description(cda_val):
-        return get_cda_position(cda_val)
-    
-    def update_position_max(riders_val):
-        return gr.Slider(minimum=1, maximum=riders_val, step=1, value=min(2, riders_val))
-    
-    def update_rotating_visibility(rotating_val):
-        return gr.Slider(visible=rotating_val)
-    
-    # Bind events
-    calc_mode.change(update_input_visibility, inputs=[calc_mode], outputs=[power, target_time_input])
-    bike_type.change(update_terrain_options, inputs=[bike_type], outputs=[terrain])
-    bike_type.change(update_crr_value, inputs=[bike_type, terrain], outputs=[crr])
-    terrain.change(update_crr_value, inputs=[bike_type, terrain], outputs=[crr])
-    cda.change(update_position_description, inputs=[cda], outputs=[position_info])
-    riders.change(update_position_max, inputs=[riders], outputs=[position])
-    rotating.change(update_rotating_visibility, inputs=[rotating], outputs=[work_pct])
-    
-    # Main calculation with button
-    inputs = [
-        calc_mode,  # New calculation mode
-        orig_power, orig_time_input, orig_speed_input,  # Original performance inputs
-        power, target_time_input, body_weight, gear_weight, slope, distance, elevation, wind,
-        cda, crr, drafting, riders, position, rotating, work_pct, bike_type, terrain
-    ]
-    
-    outputs = [status, orig_time, orig_speed, orig_wkg, pred_time, pred_speed, pred_power, pred_wkg, 
-               time_diff, gravity_power, aero_power, rolling_power, position_info, 
-               group_power, power_variance, draft_info_display, cyclist_visualization, drafting_section]
-    
-    # Calculate button click event
-    calculate_btn.click(calculate_performance, inputs=inputs, outputs=outputs)
-    
-    # Initial calculation
-    app.load(calculate_performance, inputs=inputs, outputs=outputs)
 
-if __name__ == "__main__":
-    app.launch(
-        server_name="localhost",
-        server_port=7860,
-        share=False,
-        quiet=False
+
+def _build_rolling(lang, state, refreshable):
+    bike_opts = {"road": t("bike_road", lang), "mtb": t("bike_mtb", lang)}
+    terrain_keys = list(TERRAIN_CRR[state["bike_type"]].keys())
+    terrain_opts = {k: t(f"terrain_{k}", lang) for k in terrain_keys}
+
+    def _bike_changed(val):
+        state["bike_type"] = val
+        keys = list(TERRAIN_CRR[val].keys())
+        state["terrain"] = keys[0]
+        state["crr"] = TERRAIN_CRR[val][keys[0]]
+        refreshable.refresh()
+
+    def _terrain_changed(val):
+        state["terrain"] = val
+        state["crr"] = TERRAIN_CRR[state["bike_type"]].get(val, 0.0050)
+        refreshable.refresh()
+
+    with ui.card().classes("w-full").style(
+        "background:#111827;border:1px solid #374151"
+    ):
+        with ui.card_section().classes("gap-4"):
+            _heading(t("section_rolling", lang))
+            ui.select(
+                options=bike_opts, value=state["bike_type"],
+                label=t("label_bike", lang),
+                on_change=lambda e: _bike_changed(e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full")
+            ui.select(
+                options=terrain_opts, value=state["terrain"],
+                label=t("label_terrain", lang),
+                on_change=lambda e: _terrain_changed(e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full")
+            ui.number(
+                label=t("label_crr", lang),
+                value=state["crr"], min=0.001, step=0.0005, format="%.4f",
+                on_change=lambda e: state.__setitem__("crr", e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                t("info_crr", lang)
+            )
+
+
+def _build_aero(lang, state, refreshable):
+    with ui.card().classes("w-full").style(
+        "background:#111827;border:1px solid #374151"
+    ):
+        with ui.card_section().classes("gap-4"):
+            _heading(t("section_aero", lang))
+            ui.label(f"CdA: {state['cda']:.2f} m²").classes(
+                "text-white text-sm font-medium"
+            )
+            ui.slider(
+                min=0.15, max=0.70, step=0.01, value=state["cda"],
+                on_change=lambda e: (
+                    state.__setitem__("cda", e.value),
+                    refreshable.refresh(),
+                ),
+            ).props("dark color=blue-6 label-always")
+            ui.label(cda_position(state["cda"], lang)).classes(
+                "text-xs text-gray-400 italic"
+            )
+            ui.label(t("info_cda", lang)).classes("text-[11px] text-gray-600")
+
+
+def _build_drafting(lang, state, refreshable):
+    with ui.card().classes("w-full").style(
+        "background:#111827;border:1px solid #374151"
+    ):
+        with ui.card_section().classes("gap-4"):
+            _heading(t("section_drafting", lang))
+            ui.switch(
+                t("label_enable_drafting", lang), value=state["drafting"],
+                on_change=lambda e: (
+                    state.__setitem__("drafting", e.value),
+                    refreshable.refresh(),
+                ),
+            ).props("dark color=blue-6")
+            if state["drafting"]:
+                ui.number(
+                    label=t("label_riders", lang),
+                    value=state["riders"], min=2, max=8, step=1,
+                    on_change=lambda e: (
+                        state.__setitem__("riders", int(e.value)),
+                        refreshable.refresh(),
+                    ),
+                ).props("dense outlined dark color=blue-4").classes("w-full")
+                ui.switch(
+                    t("label_rotating", lang), value=state["rotating"],
+                    on_change=lambda e: (
+                        state.__setitem__("rotating", e.value),
+                        refreshable.refresh(),
+                    ),
+                ).props("dark color=blue-6")
+                if state["rotating"]:
+                    ui.number(
+                        label=t("label_time_front", lang),
+                        value=state["work_pct"], min=0, max=100, step=1, suffix="%",
+                        on_change=lambda e: state.__setitem__("work_pct", e.value),
+                    ).props("dense outlined dark color=blue-4").classes("w-full")
+                else:
+                    ui.number(
+                        label=t("label_your_position", lang),
+                        value=state["position"], min=1, max=state["riders"], step=1,
+                        on_change=lambda e: state.__setitem__(
+                            "position", int(e.value)
+                        ),
+                    ).props("dense outlined dark color=blue-4").classes("w-full")
+
+
+def _build_prediction(lang, state):
+    with ui.card().classes("w-full").style(
+        "background:#111827;border:1px solid #374151"
+    ):
+        with ui.card_section().classes("gap-4"):
+            _heading(t("section_prediction", lang))
+
+            if state["calc_mode"] == "power_to_time":
+                ui.number(
+                    label=t("label_power", lang),
+                    value=state["power"], min=1, step=1, suffix="W",
+                    on_change=lambda e: state.__setitem__("power", e.value),
+                ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                    t("info_power", lang)
+                )
+            else:
+                ui.input(
+                    label=t("label_target_time", lang),
+                    value=state["target_time"],
+                    placeholder=t("placeholder_time_example", lang),
+                    on_change=lambda e: state.__setitem__("target_time", e.value),
+                ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                    t("info_target_time", lang)
+                )
+
+            ui.element("div").classes("w-full border-t border-gray-700 my-1")
+
+            ui.number(
+                label=t("label_body_weight", lang),
+                value=state["body_weight"], min=30, step=0.5, suffix="kg",
+                on_change=lambda e: state.__setitem__("body_weight", e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                t("info_body_weight", lang)
+            )
+            ui.number(
+                label=t("label_gear_weight", lang),
+                value=state["gear_weight"], min=0, step=0.1, suffix="kg",
+                on_change=lambda e: state.__setitem__("gear_weight", e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                t("info_gear_weight", lang)
+            )
+
+            ui.element("div").classes("w-full border-t border-gray-700 my-1")
+
+            ui.number(
+                label=t("label_gradient", lang),
+                value=state["slope"], step=0.1, suffix="%",
+                on_change=lambda e: state.__setitem__("slope", e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                t("info_gradient", lang)
+            )
+            ui.number(
+                label=t("label_distance", lang),
+                value=state["distance"], min=0.1, step=0.1, suffix="km",
+                on_change=lambda e: state.__setitem__("distance", e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                t("info_distance", lang)
+            )
+            ui.number(
+                label=t("label_start_elevation", lang),
+                value=state["start_elevation"], step=10, suffix="m",
+                on_change=lambda e: state.__setitem__("start_elevation", e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                t("info_start_elevation", lang)
+            )
+            ui.number(
+                label=t("label_wind", lang),
+                value=state["wind"], step=1, suffix="km/h",
+                on_change=lambda e: state.__setitem__("wind", e.value),
+            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                t("info_wind", lang)
+            )
+
+
+# ── Results dialog ──────────────────────────────────────────────────────────
+
+def _show_results_dialog(res, lang):
+    with ui.dialog().props("maximized=false") as dlg, \
+         ui.card().classes("w-full max-w-3xl").style(
+             "background:#0f172a;color:white;max-height:90vh;overflow-y:auto"
+         ):
+        # Title bar
+        with ui.row().classes("w-full items-center justify-between mb-2"):
+            ui.label(t("results_title", lang)).classes(
+                "text-lg font-bold text-white"
+            )
+            ui.button(icon="close", on_click=dlg.close).props(
+                "flat round dense color=grey-5"
+            )
+
+        ui.separator().props("dark")
+
+        # Summary cards
+        with ui.row().classes("w-full gap-3 my-3 flex-wrap"):
+            _result_card(t("summary_time", lang),
+                         res["time"], res["time_diff"])
+            _result_card(t("summary_speed", lang),
+                         f'{res["speed"]} km/h', "")
+            _result_card(t("summary_power", lang),
+                         f'{res["power"]} W', f'{res["wkg"]} W/kg')
+            if res["draft_info"]:
+                sub = (f'{t("label_group_power", lang)}: {res["group_power"]}W'
+                       if res["group_power"] else "")
+                _result_card(t("summary_drafting", lang),
+                             res["draft_info"], sub)
+
+        ui.separator().props("dark")
+
+        # Power breakdown
+        ui.label(t("section_power_breakdown", lang)).classes(
+            "text-sm uppercase tracking-wide text-blue-400 font-bold mt-2"
+        )
+        _power_bar(t("gravity", lang), res["gravity_pct"], res["gravity_w"], "amber")
+        _power_bar(t("aerodynamics", lang), res["aero_pct"], res["aero_w"], "blue")
+        _power_bar(t("rolling", lang), res["rolling_pct"], res["rolling_w"], "green")
+
+        # Comparison
+        if res["orig_time"] or (
+            res["orig_power"] and float(res["orig_power"] or 0) > 0
+        ):
+            ui.separator().props("dark").classes("my-2")
+            ui.label(t("section_comparison", lang)).classes(
+                "text-sm uppercase tracking-wide text-blue-400 font-bold mt-1"
+            )
+            with ui.row().classes("w-full gap-4 mt-2"):
+                with ui.column().classes("flex-1"):
+                    ui.label(t("section_original", lang)).classes(
+                        "text-xs text-gray-400 uppercase mb-1"
+                    )
+                    if res["orig_power"]:
+                        tw = res["total_weight"]
+                        op = float(res["orig_power"])
+                        ui.label(
+                            f'{t("summary_power", lang)}: {op:.0f} W '
+                            f'({op / tw:.1f} W/kg)'
+                        ).classes("text-sm text-gray-300")
+                    if res["orig_time"]:
+                        ui.label(
+                            f'{t("summary_time", lang)}: {res["orig_time"]}'
+                        ).classes("text-sm text-gray-300")
+                with ui.column().classes("flex-1"):
+                    ui.label(t("section_predicted", lang)).classes(
+                        "text-xs text-gray-400 uppercase mb-1"
+                    )
+                    ui.label(
+                        f'{t("summary_power", lang)}: {res["power"]} W '
+                        f'({res["wkg"]} W/kg)'
+                    ).classes("text-sm text-gray-300")
+                    ui.label(
+                        f'{t("summary_time", lang)}: {res["time"]}'
+                    ).classes("text-sm text-gray-300")
+
+        # Drafting visualization
+        if res["cyclist_data"]:
+            ui.separator().props("dark").classes("my-2")
+            ui.label(t("section_drafting_details", lang)).classes(
+                "text-sm uppercase tracking-wide text-blue-400 font-bold mt-1"
+            )
+            with ui.row().classes("gap-2 mt-2 flex-wrap"):
+                for c in res["cyclist_data"]:
+                    is_you = c["is_you"]
+                    style = (
+                        "background:#1e3a5f;border:2px solid #3b82f6"
+                        if is_you
+                        else "background:#111827;border:1px solid #374151"
+                    )
+                    with ui.card().classes("p-3 min-w-[80px] text-center").style(style):
+                        tag = f' ({t("cyclist_you", lang)})' if is_you else ""
+                        ui.label(
+                            f'{t("cyclist_pos", lang)} {c["position"]}{tag}'
+                        ).classes("text-xs text-gray-300 font-bold")
+                        ui.label(f'{c["power"]}W').classes(
+                            "text-base font-bold text-white"
+                        )
+                        if c["time_pct"] > 0:
+                            ui.label(
+                                f'{c["time_pct"]:.0f}% {t("cyclist_front", lang)}'
+                            ).classes("text-[10px] text-gray-500")
+
+        # Close
+        with ui.row().classes("w-full justify-end mt-4"):
+            ui.button(
+                t("close_button", lang), on_click=dlg.close
+            ).props("unelevated color=blue-7 no-caps")
+
+    dlg.open()
+
+
+def _result_card(label, value, sub):
+    with ui.card().classes("flex-1 min-w-[140px] p-3").style(
+        "background:#1e293b;border:1px solid #374151"
+    ):
+        ui.label(label).classes(
+            "text-[11px] uppercase tracking-wide text-gray-400 mb-1"
+        )
+        ui.label(value).classes("text-lg font-bold text-white")
+        if sub:
+            ui.label(sub).classes("text-xs text-gray-500")
+
+
+def _power_bar(label, pct_str, watts_str, color):
+    pct = float(pct_str or 0)
+    with ui.row().classes("w-full items-center gap-3 my-1"):
+        ui.label(label).classes("w-28 text-sm text-gray-300")
+        with ui.element("div").classes(
+            "flex-1 h-3 rounded-full overflow-hidden"
+        ).style("background:#374151"):
+            ui.element("div").classes(
+                f"h-full rounded-full bg-{color}-500"
+            ).style(f"width:{pct}%;transition:width 0.4s ease")
+        ui.label(f"{pct_str}% · {watts_str}W").classes(
+            "text-xs text-gray-400 w-28 text-right"
+        )
+
+
+# ── Run ─────────────────────────────────────────────────────────────────────
+if __name__ in {"__main__", "__mp_main__"}:
+    ui.run(
+        title="Performance Predictor",
+        favicon=_FAVICON,
+        port=7860,
+        dark=True,
+        reload=False,
     )
