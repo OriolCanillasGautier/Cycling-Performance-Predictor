@@ -214,24 +214,27 @@ def compute_avg_elevation(start_elev: float, slope_pct: float, distance_km: floa
 
 # ── Cyclist-powers for drafting visual ──────────────────────────────────────
 
-def calculate_cyclist_powers(riders, position, rotating, work_pct, power, cda, draft_fn):
+def calculate_cyclist_powers(riders, position, rotating, work_pct, front_power, cda, draft_fn):
+    """Return per-position powers at the same group speed.
+
+    ``front_power`` is interpreted as the power of the rider at position 1
+    (no drafting benefit). Other riders' required power is reduced by their
+    drafting factor for that position.
+    """
+    if riders < 2:
+        return []
+
+    position = max(1, min(riders, int(position)))
     data = []
-    if rotating:
-        ft = work_pct / 100.0
-        bdr = draft_fn(riders, riders)
-        fp = power / (ft + (1 - ft) * bdr)
-        for i in range(1, riders + 1):
-            cp = fp if i == 1 else fp * draft_fn(riders, i)
-            data.append({"position": i, "power": int(cp),
-                         "time_pct": work_pct if i == position else 0,
-                         "is_you": i == position})
-    else:
-        ydf = draft_fn(riders, position)
-        bp = power / ydf
-        for i in range(1, riders + 1):
-            df = draft_fn(riders, i)
-            data.append({"position": i, "power": int(bp * df),
-                         "time_pct": 0, "is_you": i == position})
+    for i in range(1, riders + 1):
+        df = draft_fn(riders, i)
+        cp = front_power * df
+        data.append({
+            "position": i,
+            "power": int(cp),
+            "time_pct": work_pct if rotating and i == position else 0,
+            "is_you": i == position,
+        })
     return data
 
 

@@ -100,6 +100,29 @@
     color: #e5e7eb !important;
 }
 
+/* ---------- NiceGUI spacing & form overrides ---------- */
+:root {
+    --nicegui-default-padding: 1.4rem;
+    --nicegui-default-gap: 1.25rem;
+}
+
+body {
+    background: #0b1120;
+}
+
+.q-field--outlined .q-field__control {
+    min-height: 56px;
+}
+
+.q-field__native,
+.q-field__input {
+    font-size: 1.05rem;
+}
+
+.q-card {
+    border-radius: 10px;
+}
+
 /* ---------- Summary cards ---------- */
 .summary-grid {
     display: grid;

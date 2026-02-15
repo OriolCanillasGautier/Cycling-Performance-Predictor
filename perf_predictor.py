@@ -6,7 +6,19 @@ Clean Material-Design interface with full i18n support (EN / CA / FR).
 
 import json
 import os
+import sys
 from pathlib import Path
+
+# Allow running the script directly on Windows (e.g. .\perf_predictor.py)
+# while still resolving packages from the project's virtual environment.
+_ROOT = Path(__file__).resolve().parent
+for _site in (
+    _ROOT / ".venv" / "Lib" / "site-packages",
+    _ROOT / ".venv" / "lib" / "site-packages",
+):
+    if _site.exists() and str(_site) not in sys.path:
+        sys.path.insert(0, str(_site))
+
 from nicegui import app, ui
 
 from cycling_physics import (
@@ -25,7 +37,34 @@ _LANG_PATH = os.path.join(os.path.dirname(__file__), "languagepacks.json")
 with open(_LANG_PATH, encoding="utf-8") as _f:
     LANG = json.load(_f)
 
-LANG_OPTIONS = {"en": "English", "ca": "Català", "fr": "Français"}
+LANG_OPTIONS = {
+    "en": "English",
+    "ca": "Català",
+    "fr": "Français",
+    "es": "Español",
+    "de": "Deutsch",
+    "it": "Italiano",
+    "pt": "Português",
+    "nl": "Nederlands",
+    "pl": "Polski",
+    "sv": "Svenska",
+    "no": "Norsk",
+    "da": "Dansk",
+    "fi": "Suomi",
+    "cs": "Čeština",
+    "sk": "Slovenčina",
+    "hu": "Magyar",
+    "ro": "Română",
+    "bg": "Български",
+    "el": "Ελληνικά",
+    "hr": "Hrvatski",
+    "sl": "Slovenščina",
+    "et": "Eesti",
+    "lv": "Latviešu",
+    "lt": "Lietuvių",
+    "ga": "Gaeilge",
+    "mt": "Malti",
+}
 
 _FAVICON = Path(__file__).parent / "favicon.svg"
 app.add_static_files("/static", Path(__file__).parent)
@@ -64,46 +103,42 @@ def run_calculation(state: dict, lang: str) -> dict:
     )
 
     cda_val = state["cda"]
-    effective_cda = cda_val
     draft_info = ""
     group_power = 0
     cyclist_data = []
+    your_power = None
 
     if state["drafting"] and state["riders"] >= 2:
         riders = state["riders"]
         pos = state["position"]
         if state["rotating"]:
-            ft = state["work_pct"] / 100.0
-            bdr = cycling_draft_drag_reduction(riders, riders)
-            effective_cda = cda_val * (ft + (1 - ft) * bdr)
             draft_info = t("draft_rotating", lang).format(work_pct=state["work_pct"])
         else:
             dr = cycling_draft_drag_reduction(riders, pos)
-            effective_cda = cda_val * dr
             draft_info = t("draft_position", lang).format(
                 position=pos, riders=riders, draft_pct=(1 - dr) * 100
             )
 
     mode = state["calc_mode"]
     if mode == "power_to_time":
-        pw = state["power"]
-        if pw <= 0:
+        front_power = state["power"]
+        if front_power <= 0:
             return {"error": t("error_power_positive", lang)}
         est = CyclingPhysics.cycling_power_velocity_search(
-            pw, slope_dec, total_weight, state["crr"], effective_cda, elevation, wind_ms
+            front_power, slope_dec, total_weight, state["crr"], cda_val, elevation, wind_ms
         )
         if not est or est.velocity <= 0:
             return {"error": t("error_no_solution", lang)}
         pred_time_s = dist_m / est.velocity
         pred_speed = est.velocity * 3.6
-        calc_power = pw
+        calc_power = front_power
     else:
         ts = parse_time_input(state["target_time"])
         if not ts or ts <= 0:
             return {"error": t("error_invalid_target_time", lang)}
         est = CyclingPhysics.cycling_time_power_search(
             ts, dist_m, slope_dec, total_weight, state["crr"],
-            effective_cda, elevation, wind_ms
+            cda_val, elevation, wind_ms
         )
         if not est or est.velocity <= 0:
             return {"error": t("error_no_solution_target", lang)}
@@ -118,6 +153,13 @@ def run_calculation(state: dict, lang: str) -> dict:
         )
         if cyclist_data:
             group_power = sum(c["power"] for c in cyclist_data) / len(cyclist_data)
+            if state["rotating"]:
+                ft = state["work_pct"] / 100.0
+                rear_df = cycling_draft_drag_reduction(state["riders"], state["riders"])
+                your_power = calc_power * (ft + (1 - ft) * rear_df)
+            else:
+                your_df = cycling_draft_drag_reduction(state["riders"], state["position"])
+                your_power = calc_power * your_df
 
     pred_wkg = calc_power / total_weight
     gw, aw, rw = est.g_watts, est.a_watts, est.r_watts
@@ -155,6 +197,7 @@ def run_calculation(state: dict, lang: str) -> dict:
         "rolling_pct": f"{rp:.0f}",
         "draft_info": draft_info,
         "group_power": f"{group_power:.0f}" if group_power else "",
+        "your_power": f"{your_power:.0f}" if your_power is not None else "",
         "cyclist_data": cyclist_data,
         "orig_power": state.get("orig_power", ""),
         "orig_time": state.get("orig_time", ""),
@@ -193,13 +236,10 @@ def main_page():
         "work_pct": 50,
     }
 
-    # Convenience
     def L():
         return state["lang"]
 
-    # Dark background
-    ui.query("body").style("background:#0b1120")
-
+    # Dark background + spacing overrides
     # ── HEADER — must be direct page child ──
     with ui.header().classes(
         "items-center justify-between px-6 py-3 shadow-lg"
@@ -211,54 +251,45 @@ def main_page():
             options=LANG_OPTIONS,
             value=state["lang"],
             on_change=lambda e: _change_lang(e.value),
-        ).props('dense outlined dark color="blue-4"').classes("min-w-[140px]")
+        ).props('outlined dark color="blue-4"').classes("min-w-[190px]")
 
-    # ── REFRESHABLE BODY ──
     @ui.refreshable
     def body_content():
         lang = L()
 
-        # Subtitle
-        with ui.column().classes("w-full max-w-6xl mx-auto px-4 mt-4 mb-1"):
+        with ui.column().classes("w-full max-w-7xl mx-auto px-6 mt-6 mb-2"):
             ui.label(t("app_subtitle", lang)).classes(
                 "text-gray-400 text-sm italic"
             )
 
-        with ui.column().classes("w-full max-w-6xl mx-auto px-4 gap-6 pb-8"):
-            # Mode selector
-            with ui.card().classes("w-full").style(
-                "background:#111827;border:1px solid #374151"
-            ):
-                with ui.card_section():
-                    ui.label(t("mode_label", lang)).classes(
-                        "text-xs uppercase tracking-wide text-gray-400 mb-2"
-                    )
-                    ui.radio(
-                        {
-                            "power_to_time": t("mode_power_time", lang),
-                            "time_to_power": t("mode_time_power", lang),
-                        },
-                        value=state["calc_mode"],
-                        on_change=lambda e: (
-                            state.__setitem__("calc_mode", e.value),
-                            body_content.refresh(),
-                        ),
-                    ).props("inline dark color=blue-6")
+        with ui.column().classes("w-full max-w-7xl mx-auto px-6 gap-8 pb-10"):
+            # Compact mode switch
+            with ui.row().classes("w-full items-center gap-4"):
+                ui.label(t("mode_label", lang)).classes(
+                    "text-xs uppercase tracking-wide text-gray-400"
+                )
+                ui.toggle(
+                    {
+                        "power_to_time": t("mode_power_time", lang),
+                        "time_to_power": t("mode_time_power", lang),
+                    },
+                    value=state["calc_mode"],
+                    on_change=lambda e: (
+                        state.__setitem__("calc_mode", e.value),
+                        body_content.refresh(),
+                    ),
+                ).props("unelevated no-caps color=slate-7 toggle-color=blue-7")
 
-            # Two-column layout
-            with ui.row().classes("w-full gap-6 items-start flex-wrap"):
-                # LEFT column
-                with ui.column().classes("flex-1 gap-6 min-w-[320px]"):
+            with ui.row().classes("w-full gap-8 items-start flex-wrap"):
+                with ui.column().classes("flex-1 gap-8 min-w-[360px]"):
                     _build_baseline(lang, state)
                     _build_rolling(lang, state, body_content)
                     _build_aero(lang, state, body_content)
                     _build_drafting(lang, state, body_content)
 
-                # RIGHT column
-                with ui.column().classes("flex-1 gap-6 min-w-[320px]"):
+                with ui.column().classes("flex-1 gap-8 min-w-[360px]"):
                     _build_prediction(lang, state)
 
-            # Calculate
             ui.button(
                 t("calc_button", lang),
                 on_click=lambda: _calculate(),
@@ -266,7 +297,6 @@ def main_page():
                 "w-full max-w-md mx-auto mt-2 font-bold tracking-wide"
             )
 
-    # ── Helpers ──
     def _change_lang(val):
         state["lang"] = val
         header_title.text = t("app_title", val)
@@ -280,7 +310,6 @@ def main_page():
             return
         _show_results_dialog(res, lang)
 
-    # First render
     body_content()
 
 
@@ -297,13 +326,13 @@ def _build_baseline(lang, state):
     with ui.card().classes("w-full").style(
         "background:#111827;border:1px solid #374151"
     ):
-        with ui.card_section().classes("gap-4"):
+        with ui.card_section().classes("gap-5"):
             _heading(t("section_baseline", lang))
             ui.number(
                 label=t("label_orig_power", lang),
                 value=state["orig_power"], min=0, step=1, suffix="W",
                 on_change=lambda e: state.__setitem__("orig_power", e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+            ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                 t("info_orig_power", lang)
             )
             ui.input(
@@ -311,14 +340,14 @@ def _build_baseline(lang, state):
                 value=state["orig_time"],
                 placeholder=t("placeholder_time_example", lang),
                 on_change=lambda e: state.__setitem__("orig_time", e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+            ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                 t("info_orig_time", lang)
             )
             ui.number(
                 label=t("label_orig_speed", lang),
                 value=state["orig_speed"], min=0, step=0.1, suffix="km/h",
                 on_change=lambda e: state.__setitem__("orig_speed", e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+            ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                 t("info_orig_speed", lang)
             )
 
@@ -343,23 +372,23 @@ def _build_rolling(lang, state, refreshable):
     with ui.card().classes("w-full").style(
         "background:#111827;border:1px solid #374151"
     ):
-        with ui.card_section().classes("gap-4"):
+        with ui.card_section().classes("gap-5"):
             _heading(t("section_rolling", lang))
             ui.select(
                 options=bike_opts, value=state["bike_type"],
                 label=t("label_bike", lang),
                 on_change=lambda e: _bike_changed(e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full")
+            ).props("outlined dark color=blue-4").classes("w-full")
             ui.select(
                 options=terrain_opts, value=state["terrain"],
                 label=t("label_terrain", lang),
                 on_change=lambda e: _terrain_changed(e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full")
+            ).props("outlined dark color=blue-4").classes("w-full")
             ui.number(
                 label=t("label_crr", lang),
                 value=state["crr"], min=0.001, step=0.0005, format="%.4f",
                 on_change=lambda e: state.__setitem__("crr", e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+            ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                 t("info_crr", lang)
             )
 
@@ -368,7 +397,7 @@ def _build_aero(lang, state, refreshable):
     with ui.card().classes("w-full").style(
         "background:#111827;border:1px solid #374151"
     ):
-        with ui.card_section().classes("gap-4"):
+        with ui.card_section().classes("gap-5"):
             _heading(t("section_aero", lang))
             ui.label(f"CdA: {state['cda']:.2f} m²").classes(
                 "text-white text-sm font-medium"
@@ -390,7 +419,7 @@ def _build_drafting(lang, state, refreshable):
     with ui.card().classes("w-full").style(
         "background:#111827;border:1px solid #374151"
     ):
-        with ui.card_section().classes("gap-4"):
+        with ui.card_section().classes("gap-5"):
             _heading(t("section_drafting", lang))
             ui.switch(
                 t("label_enable_drafting", lang), value=state["drafting"],
@@ -407,7 +436,7 @@ def _build_drafting(lang, state, refreshable):
                         state.__setitem__("riders", int(e.value)),
                         refreshable.refresh(),
                     ),
-                ).props("dense outlined dark color=blue-4").classes("w-full")
+                ).props("outlined dark color=blue-4").classes("w-full")
                 ui.switch(
                     t("label_rotating", lang), value=state["rotating"],
                     on_change=lambda e: (
@@ -420,7 +449,7 @@ def _build_drafting(lang, state, refreshable):
                         label=t("label_time_front", lang),
                         value=state["work_pct"], min=0, max=100, step=1, suffix="%",
                         on_change=lambda e: state.__setitem__("work_pct", e.value),
-                    ).props("dense outlined dark color=blue-4").classes("w-full")
+                    ).props("outlined dark color=blue-4").classes("w-full")
                 else:
                     ui.number(
                         label=t("label_your_position", lang),
@@ -428,14 +457,14 @@ def _build_drafting(lang, state, refreshable):
                         on_change=lambda e: state.__setitem__(
                             "position", int(e.value)
                         ),
-                    ).props("dense outlined dark color=blue-4").classes("w-full")
+                    ).props("outlined dark color=blue-4").classes("w-full")
 
 
 def _build_prediction(lang, state):
     with ui.card().classes("w-full").style(
         "background:#111827;border:1px solid #374151"
     ):
-        with ui.card_section().classes("gap-4"):
+        with ui.card_section().classes("gap-5"):
             _heading(t("section_prediction", lang))
 
             if state["calc_mode"] == "power_to_time":
@@ -443,7 +472,7 @@ def _build_prediction(lang, state):
                     label=t("label_power", lang),
                     value=state["power"], min=1, step=1, suffix="W",
                     on_change=lambda e: state.__setitem__("power", e.value),
-                ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                     t("info_power", lang)
                 )
             else:
@@ -452,55 +481,55 @@ def _build_prediction(lang, state):
                     value=state["target_time"],
                     placeholder=t("placeholder_time_example", lang),
                     on_change=lambda e: state.__setitem__("target_time", e.value),
-                ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+                ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                     t("info_target_time", lang)
                 )
 
-            ui.element("div").classes("w-full border-t border-gray-700 my-1")
+            ui.element("div").classes("w-full border-t border-gray-700 my-2")
 
             ui.number(
                 label=t("label_body_weight", lang),
                 value=state["body_weight"], min=30, step=0.5, suffix="kg",
                 on_change=lambda e: state.__setitem__("body_weight", e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+            ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                 t("info_body_weight", lang)
             )
             ui.number(
                 label=t("label_gear_weight", lang),
                 value=state["gear_weight"], min=0, step=0.1, suffix="kg",
                 on_change=lambda e: state.__setitem__("gear_weight", e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+            ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                 t("info_gear_weight", lang)
             )
 
-            ui.element("div").classes("w-full border-t border-gray-700 my-1")
+            ui.element("div").classes("w-full border-t border-gray-700 my-2")
 
             ui.number(
                 label=t("label_gradient", lang),
                 value=state["slope"], step=0.1, suffix="%",
                 on_change=lambda e: state.__setitem__("slope", e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+            ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                 t("info_gradient", lang)
             )
             ui.number(
                 label=t("label_distance", lang),
                 value=state["distance"], min=0.1, step=0.1, suffix="km",
                 on_change=lambda e: state.__setitem__("distance", e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+            ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                 t("info_distance", lang)
             )
             ui.number(
                 label=t("label_start_elevation", lang),
                 value=state["start_elevation"], step=10, suffix="m",
                 on_change=lambda e: state.__setitem__("start_elevation", e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+            ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                 t("info_start_elevation", lang)
             )
             ui.number(
                 label=t("label_wind", lang),
                 value=state["wind"], step=1, suffix="km/h",
                 on_change=lambda e: state.__setitem__("wind", e.value),
-            ).props("dense outlined dark color=blue-4").classes("w-full").tooltip(
+            ).props("outlined dark color=blue-4").classes("w-full").tooltip(
                 t("info_wind", lang)
             )
 
@@ -653,5 +682,5 @@ if __name__ in {"__main__", "__mp_main__"}:
         favicon=_FAVICON,
         port=7860,
         dark=True,
-        reload=False,
+        reload=True,
     )

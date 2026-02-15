@@ -1,26 +1,27 @@
 # Cycling Performance Predictor
 
-A Gradio-based cycling simulator that estimates either:
+A NiceGUI-based cycling simulator that estimates either:
 
-- **time/speed from power** (`Power → Time`), or
-- **required power from target time** (`Time → Power`).
+- **time/speed from power** (Power → Time), or
+- **required power from target time** (Time → Power).
 
-The model combines gravity, rolling resistance, aerodynamics, drivetrain losses, and optional drafting effects.
+The model combines gravity, rolling resistance, aerodynamics, drivetrain losses, and optional drafting effects. The interface supports 26 European languages with full internationalization.
 
 ---
 
 ## Project Structure
 
-- [perf_predictor.py](perf_predictor.py): Gradio UI, event wiring, and orchestration.
-- [cycling_physics.py](cycling_physics.py): all physics equations, helper utilities, drafting logic, and HTML builders.
-- [styles.css](styles.css): dark theme and component styling.
+- [perf_predictor.py](perf_predictor.py): NiceGUI FastAPI-based UI, event wiring, and calculation orchestration.
+- [cycling_physics.py](cycling_physics.py): Core physics equations, utility functions, drafting logic, and constants.
+- [styles.css](styles.css): Centralized dark theme styling and NiceGUI component overrides.
+- [languagepacks.json](languagepacks.json): Internationalization strings for 26 languages (English, Catalan, French, Spanish, German, Italian, Portuguese, Dutch, Polish, Swedish, Norwegian, Danish, Finnish, Czech, Slovak, Hungarian, Romanian, Bulgarian, Greek, Croatian, Slovenian, Estonian, Latvian, Lithuanian, Irish, Maltese).
 - [requirements.txt](requirements.txt): Python dependencies.
 
 ---
 
 ## Requirements
 
-- Python **3.10+** recommended (3.8+ may work depending on dependency versions)
+- Python **3.10+** recommended (3.9+ may work)
 - pip
 
 ---
@@ -30,7 +31,7 @@ The model combines gravity, rolling resistance, aerodynamics, drivetrain losses,
 ### 1) Clone or open the folder
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/OriolCanillasGautier/Cycling-Performance-Predictor.git
 cd Cycling-Performance-Predictor
 ```
 
@@ -58,32 +59,43 @@ pip install -r requirements.txt
 
 ### 4) Run the app
 
+**Windows PowerShell (direct execution via virtualenv bootstrap):**
+
+```powershell
+.\perf_predictor.py
+```
+
+**Any platform (standard Python):**
+
 ```bash
 python perf_predictor.py
 ```
 
-Then open the local URL printed by Gradio (usually `http://localhost:7860`).
+The NiceGUI server will start on http://localhost:7860.
 
 ---
 
 ## Quick Usage
 
-1. Pick mode:
-   - `Power → Time`: input power, get predicted speed and time.
-   - `Time → Power`: input target time, get required power.
-2. Enter rider+bike mass:
-   - `Body Weight (kg)`
-   - `Bike / Gear Weight (kg)`
-3. Enter route/environment:
-   - `Gradient (%)`
-   - `Distance (km)`
-   - `Start Elevation (m)`
-   - `Wind (km/h)` (headwind positive, tailwind negative)
-4. Set resistance model:
-   - bike type + terrain (prefills `Crr`)
-   - `CdA`
-5. Optional: enable drafting.
-6. Click **Calculate Performance**.
+1. Select language from top-right selector (26 options available).
+2. Pick calculation mode:
+   - Power → Time: input power, get predicted speed and time.
+   - Time → Power: input target time, get required power.
+3. Enter rider and bike mass:
+   - Body Weight (kg)
+   - Bike / Gear Weight (kg)
+4. Configure route and environment:
+   - Gradient (%)
+   - Distance (km)
+   - Start Elevation (m)
+   - Wind (km/h) - headwind positive, tailwind negative
+5. Set resistance model:
+   - Bike type (road / mtb) and terrain (auto-fills Crr)
+   - CdA (drag area m²)
+6. Optional: enable drafting and configure group size/position/rotating paceline.
+7. Click Calculate Performance.
+
+Results display in a detailed dialog with power breakdown, time/speed prediction, and drafting analysis.
 
 ---
 
@@ -255,22 +267,32 @@ Warnings are shown for extreme combinations (e.g., very low speed on steep gradi
 The app launches with:
 
 ```python
-app.launch(server_name="localhost", server_port=7860, share=False, quiet=False)
+ui.run(
+    title="Performance Predictor",
+    favicon=_FAVICON,
+    port=7860,
+    dark=True,
+    reload=True,
+)
 ```
 
-If port 7860 is busy, change `server_port` in [perf_predictor.py](perf_predictor.py).
+If port 7860 is busy, change the `port` parameter in [perf_predictor.py](perf_predictor.py).
+
+The app automatically reloads on file changes when `reload=True`.
 
 ---
 
 ## Troubleshooting
 
-### `ModuleNotFoundError: No module named 'gradio'`
+### ModuleNotFoundError: No module named 'nicegui'
 
-Install dependencies in the active environment:
+Ensure dependencies are installed in the active virtual environment:
 
 ```bash
 pip install -r requirements.txt
 ```
+
+On Windows, the app includes a virtualenv path bootstrap to support direct .py execution. If running from a different shell/IDE, ensure the venv is activated first.
 
 ### PowerShell blocks script activation
 
@@ -282,16 +304,14 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 Then reactivate `.venv`.
 
-### Gradio output mismatch error
-
-If you modify UI outputs, ensure the return tuple length in `calculate_performance()` and `_error()` exactly matches `_outputs`.
-
 ---
 
 ## Notes
 
 - This tool is an engineering approximation, not a lab-grade physiological model.
 - Real-world performance is influenced by additional factors (fatigue, transient efforts, yaw angle, tire pressure, drivetrain specifics, road texture variability, etc.).
+- All CSS styling is centralized in styles.css for maintainability and organization.
+- The app supports 26 European languages via the languagepacks.json file. Translations are auto-generated and can be manually improved.
 
 ---
 
