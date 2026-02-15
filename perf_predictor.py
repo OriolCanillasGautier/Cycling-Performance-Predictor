@@ -427,16 +427,15 @@ def _build_aero(lang, state, refreshable):
     ):
         with ui.card_section().classes("gap-5"):
             _heading(t("section_aero", lang))
-            ui.label(f"CdA: {state['cda']:.2f} m²").classes(
-                "text-white text-sm font-medium"
-            )
-            ui.slider(
-                min=0.15, max=0.70, step=0.01, value=state["cda"],
+            ui.number(
+                label="CdA",
+                value=state["cda"], min=0.15, max=0.70, step=0.01,
+                format="%.2f", suffix="m²",
                 on_change=lambda e: (
                     state.__setitem__("cda", e.value),
                     refreshable.refresh(),
                 ),
-            ).props("dark color=blue-6 label-always")
+            ).props("outlined dark color=blue-4").classes("w-full")
             ui.label(cda_position(state["cda"], lang)).classes(
                 "text-xs text-gray-400 italic"
             )
@@ -465,16 +464,15 @@ def _build_drafting(lang, state, refreshable):
                         refreshable.refresh(),
                     ),
                 ).props("outlined dark color=blue-4").classes("w-full")
-                ui.label(
-                    t("label_draft_gap", lang) + f": {state['draft_gap']:.2f} m"
-                ).classes("text-white text-sm font-medium")
-                ui.slider(
-                    min=0.15, max=5.0, step=0.01, value=state["draft_gap"],
+                ui.number(
+                    label=t("label_draft_gap", lang),
+                    value=state["draft_gap"], min=0.15, max=5.0, step=0.01,
+                    format="%.2f", suffix="m",
                     on_change=lambda e: (
                         state.__setitem__("draft_gap", round(e.value, 2)),
                         refreshable.refresh(),
                     ),
-                ).props("dark color=blue-6").classes("w-full")
+                ).props("outlined dark color=blue-4").classes("w-full")
                 ui.label(t("info_draft_gap", lang)).classes(
                     "text-[11px] text-gray-600"
                 )
