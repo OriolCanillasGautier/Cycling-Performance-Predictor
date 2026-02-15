@@ -86,13 +86,15 @@ def run_benchmark(scenarios_path: str | Path) -> dict:
         riders = int(s["riders"])
         position = int(s["position"])
         gap_m = float(s.get("gap_m", 0.5))
+        lateral_m = float(s.get("lateral_offset_m", 0.0))
         speed_kmh = _scenario_speed_kmh(s)
 
         dyn_mult = cycling_draft_drag_reduction(
-            riders, position, speed_kmh=speed_kmh, gap_m=gap_m
+            riders, position, speed_kmh=speed_kmh, gap_m=gap_m,
+            lateral_offset_m=lateral_m,
         )
         leg_mult = cycling_draft_drag_reduction_legacy(
-            riders, position, speed_kmh=speed_kmh, gap_m=gap_m
+            riders, position, speed_kmh=speed_kmh, gap_m=gap_m,
         )
 
         dyn_draft = 1.0 - dyn_mult
@@ -112,6 +114,7 @@ def run_benchmark(scenarios_path: str | Path) -> dict:
             "position": position,
             "speed_kmh": round(speed_kmh, 2),
             "gap_m": round(gap_m, 2),
+            "lateral_offset_m": round(lateral_m, 2),
             "distance_km": float(s.get("distance_km", 0)),
             "gradient_pct": float(s["gradient_pct"]),
             "dyn_draft_pct": dyn_draft * 100.0,

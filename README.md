@@ -137,19 +137,100 @@ Implemented in `compute_avg_elevation()`.
 
 ### 6) Drafting Model
 
-When drafting is enabled, CdA is scaled by a reduction factor based on:
+The drafting model is **purely theoretical and physics-based**, grounded in CFD studies (Blocken et al.), experimental data (Hagberg & McCole), and fundamental aerodynamics. It calculates the effective CdA reduction for each rider based on their position within the slipstream.
 
-- **number of riders** in the group
-- **rider position** (1 = front, no reduction)
-- **optional rotating paceline** duty cycle (% time at front)
-- **gap between riders** (closer = more draft benefit)
-- **speed** (aero benefit increases at higher speeds)
+#### Core Principle
 
-Front rider experiences no reduction (factor = 1.0). Riders behind get lower effective drag (factor < 1.0).
+Drafting **only reduces aerodynamic drag**. Gravity and rolling resistance are unaffected by the slipstream. The effect is modeled as a multiplicative reduction of CdA:
 
-The **dynamic model** uses speed-dependent and position-dependent calculations. The **legacy model** provides a simpler baseline for comparison.
+$$
+(C_dA)_{\text{eff},i} = (C_dA) \cdot D(N, i, d_{\text{long}}, d_{\text{lat}}, v)
+$$
 
-The app estimates group power distribution and displays rider cards showing individual effort and savings.
+where $D \in [0,1]$ is the **drag reduction factor** (1.0 = no benefit, < 1.0 = benefit).
+
+#### Five Independent Factors
+
+The complete model combines:
+
+**1. Longitudinal gap distance** – Double-exponential fit to CFD data
+
+$$
+D_{\text{gap}}(d) = 1 - \left(A e^{-\alpha d} + B e^{-\beta d}\right)
+$$
+
+with calibration constants: $A = 0.54$, $\alpha = 0.30/\text{m}$, $B = 0.25$, $\beta = 0.025/\text{m}$.
+
+- At 0.25 m gap → ~75% reduction (multiplier ≈ 0.25)
+- At 2.64 m gap → ~48% reduction (multiplier ≈ 0.52)
+- At 50 m gap → ~7% reduction (multiplier ≈ 0.93)
+
+**2. Speed correction** – Power-law scaling (aero drag ~ $v^2$, power ~ $v^3$)
+
+$$
+D_{\text{speed}}(v) = \begin{cases}
+0.0 & \text{if } v < 4.2 \text{ m/s} \; (\approx 15\text{ km/h}) \\
+\min\left(\left(\frac{v}{15 \text{ m/s}}\right)^{1.2}, 1.6\right) & \text{otherwise}
+\end{cases}
+$$
+
+**Below ~15 km/h, the drafting benefit is zero** (aero drag is negligible at low speeds). Above this threshold, the benefit scales with speed.
+
+**3. Group-size bonus** – Larger groups have deeper, wider wakes
+
+$$
+D_{\text{group}}(N) = 1 + 0.12 \log_2(N / 2)
+$$
+
+- 2 riders → 1.0× (baseline)
+- 4 riders → ~1.10× (10% more benefit)
+- 8 riders → ~1.20× (20% more benefit)
+
+**4. Position decay** – First follower gets full benefit; subsequent positions decay
+
+$$
+D_{\text{pos}}(i) = \begin{cases}
+0.0 & \text{if } i = 1 \text{ (leader)} \\
+1.0 & \text{if } i = 2 \text{ (first follower)} \\
+\max(0.3, e^{-0.04(i-2)}) & \text{if } i > 2 \text{ (behind first)}
+\end{cases}
+$$
+
+At position 8 in a large group, riders still receive ~80% of position 2's benefit.
+
+**5. Lateral offset (NEW)** – Gaussian wake profile based on CFD
+
+$$
+D_{\text{lat}}(d_{\text{lat}}) = e^{-(d_{\text{lat}} / 0.25)^2}
+$$
+
+Even small lateral displacements drastically reduce benefit:
+- 0.00 m (aligned) → factor = 1.00
+- 0.15 m (slightly left/right) → factor ≈ 0.70
+- 0.30 m (half-bike-width) → factor ≈ 0.37
+- 0.50 m (full offset) → factor ≈ 0.08 (essentially no benefit)
+
+This reflects the narrow nature of the aerodynamic wake observed in CFD studies.
+
+#### Combined Model
+
+The final drag reduction is:
+
+$$
+D_{\text{total}} = 1 - \min\left(0.80, \left(D_{\text{gap}} \cdot D_{\text{speed}} \cdot D_{\text{group}} \cdot D_{\text{pos}} \cdot D_{\text{lat}}\right)\right)
+$$
+
+The clamping (`min`) ensures physically realistic maximum reductions (~80%) and minimum multiplier (0.20).
+
+#### UI Parameters
+
+- **Riders**: Total number in the group
+- **Position**: Your position (1 = front, no reduction)
+- **Gap**: Longitudinal wheel-to-wheel distance (m). Typical peloton: 0.3–0.5 m; cautious: 1–2 m
+- **Lateral offset (NEW)**: Side-to-side displacement from leader's centreline (m). Default 0.0 (perfectly aligned). Common values: 0.15–0.30 m in realistic formation
+- **Rotating**: Enable rotating paceline mode and set % time at front
+
+The model estimates group power distribution and displays rider cards showing individual effort and savings.
 
 ### 7) Key Parameters
 
@@ -164,6 +245,8 @@ The app estimates group power distribution and displays rider cards showing indi
 | Crr | - | Rolling resistance | 0.003 - 0.008 |
 | Wind | km/h | Headwind positive | -20 to 20 |
 | Air Density | kg/m³ | At elevation | 1.0 - 1.3 |
+| Gap (Drafting) | m | Wheel-to-wheel distance | 0.15 - 5.0 |
+| Lateral Offset (Drafting) | m | Lateral displacement from centre | 0.0 - 1.0 |
 
 ---
 
@@ -247,6 +330,7 @@ The NiceGUI server will start on **http://localhost:7860**.
    - Group size (number of riders)
    - Position in line (1 = front)
    - Gap between riders (meters)
+   - Lateral offset (meters) – side-to-side displacement from leader (0.0 = aligned, typical: 0.15–0.30)
    - Enable rotating paceline for duty cycle
 
 7. **Click Calculate Performance**
@@ -438,7 +522,24 @@ python benchmark/benchmark_drafting.py
 
 ## Additional Notes
 
-- This tool is an **engineering approximation**, not a lab-grade physiological model.
+### Theoretical Foundation
+
+The drafting model is based on peer-reviewed CFD and experimental research:
+
+- **Blocken et al. (2018)** – CFD-based drag reduction vs. gap distance
+- **Hagberg & McCole** – Speed-dependent drafting benefit (18% at 32 km/h, 27% at 40 km/h)
+- **Experimental field data** – 27–66% reduction at 0.32–0.85 m gaps
+
+#### Recent Improvements (v2.0)
+
+- **Lateral separation**: Riders rarely stay perfectly behind their wheels; lateral offsets are now modeled via Gaussian wake profile
+- **Speed threshold**: Below ~15 km/h, aerodynamic drag is negligible, so drafting provides no benefit—the model now correctly returns zero reduction at low speeds
+- **Dimensionality**: Model extended from quasi-1D (gap only) to 2D (gap + lateral offset), improving physical accuracy
+
+### Engineering Model Limitations
+
+This is an **engineering approximation based on physics**, not a lab-grade physiological model.
+
 - Real-world performance influenced by additional factors: fatigue, transient efforts, yaw angle, tire pressure, drivetrain specifics, road texture, gearing efficiency, etc.
 - All model parameters (CRR, CdA, drivetrain loss) are configurable per scenario.
 - The benchmark system supports adding custom formulas and calculations. See [benchmark/README.md](benchmark/README.md).

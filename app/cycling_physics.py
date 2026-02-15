@@ -168,6 +168,30 @@ def _gap_reduction(gap_m: float) -> float:
         gap_m = 0.15  # wheel-to-wheel minimum
     return _GAP_A * math.exp(-_GAP_ALPHA * gap_m) + _GAP_B * math.exp(-_GAP_BETA * gap_m)
 
+
+# ── Lateral offset correction ───────────────────────────────────────────────
+# CFD studies show that the drafting wake is narrow: a lateral offset of
+# ~0.3 m already eliminates most of the benefit.  Modelled as a Gaussian
+# decay centred on the leader's centreline.
+#   offset 0.00 m → factor 1.00  (full benefit)
+#   offset 0.15 m → factor 0.70
+#   offset 0.25 m → factor 0.37
+#   offset 0.40 m → factor 0.08  (almost no benefit)
+
+_LATERAL_SIGMA = 0.25  # metres — wake half-width (Gaussian σ)
+
+
+def _lateral_factor(offset_m: float) -> float:
+    """Multiplicative attenuation of drag reduction due to lateral offset.
+
+    Returns 1.0 when the follower is perfectly aligned (offset = 0),
+    and decays towards 0.0 as the follower moves sideways.
+    Based on Gaussian wake profile observed in CFD simulations.
+    """
+    if offset_m <= 0.0:
+        return 1.0
+    return math.exp(-(offset_m / _LATERAL_SIGMA) ** 2)
+
 # ── Speed correction ────────────────────────────────────────────────────────
 # Aero drag ~ v^2, so drafting benefit scales with speed.
 # At low speed (<15 km/h) benefit is minimal; at high speed it saturates.
@@ -176,21 +200,25 @@ def _gap_reduction(gap_m: float) -> float:
 
 _SPEED_REF = 54.0 / 3.6  # 15 m/s — reference speed for gap calibration
 
+_SPEED_MIN_MS = 4.2  # ~15 km/h — below this threshold aero drag is negligible
+
+
 def _speed_factor(speed_ms: float) -> float:
     """Multiplicative correction for speed relative to reference.
 
-    Returns a factor ~0 at very low speed, ~1.0 at reference speed,
-    and >1.0 (capped) at very high speed.  Uses a power-law with
-    exponent 1.2 to reflect the v^2 nature of aero drag while
-    accounting for diminishing returns at extreme speeds.
+    Returns 0.0 below ~15 km/h (aerodynamic drag is negligible at low
+    speed, so drafting provides no meaningful benefit).  Ramps to ~1.0
+    at the reference speed and >1.0 (capped) at very high speed.
+    Uses a power-law with exponent 1.2 to reflect the v² nature of
+    aero drag while accounting for diminishing returns at extreme speeds.
 
     Calibrated against Hagberg & McCole data:
-      ~15% reduction at 15 km/h (aero drag negligible)
+      below 15 km/h: 0% (aero drag negligible — threshold applied)
       ~38% reduction at 32 km/h (18% whole-group average)
       ~50% reduction at 40 km/h (27% whole-group average)
       ~71% reduction at 54 km/h (Blocken reference)
     """
-    if speed_ms <= 0:
+    if speed_ms < _SPEED_MIN_MS:
         return 0.0
     ratio = speed_ms / _SPEED_REF
     return min(ratio ** 1.2, 1.6)
@@ -237,18 +265,44 @@ def _position_decay(position: int, riders: int) -> float:
 
 def cycling_draft_drag_reduction(riders: int, position: int,
                                   speed_kmh: float = 40.0,
-                                  gap_m: float = 0.5) -> float:
-    """Dynamic CdA multiplier (1.0 = no benefit) for a rider at *position*
-    in a group of *riders*, travelling at *speed_kmh* with *gap_m* metres
-    between each wheel.
+                                  gap_m: float = 0.5,
+                                  lateral_offset_m: float = 0.0) -> float:
+    """Aerodynamic CdA multiplier for a drafting rider.
 
-    The model combines four independent factors:
-      1. Gap distance  — double-exponential fit to Blocken et al. CFD data
-      2. Speed          — power-law scaling (aero drag ~ v^2)
-      3. Group size     — logarithmic bonus for larger wakes
-      4. Position       — mild decay for positions behind the first follower
+    Returns a value in (0, 1] that should be applied **only to the
+    aerodynamic drag component** (CdA or aero watts).  A value of 1.0
+    means no drafting benefit; lower values indicate greater benefit.
 
-    Returns a value in (0, 1].  Lower = more draft benefit.
+    Parameters
+    ----------
+    riders : int
+        Total number of riders in the paceline (≥ 2 for any benefit).
+    position : int
+        1-based position of the rider (1 = leader, no benefit).
+    speed_kmh : float
+        Group speed in km/h.  Below ~15 km/h aerodynamic drag is
+        negligible and the function returns 1.0 (no benefit).
+    gap_m : float
+        Longitudinal wheel-to-wheel gap in metres.
+    lateral_offset_m : float
+        Lateral (side-to-side) displacement from the leader's
+        centreline in metres.  Default 0.0 = perfectly aligned.
+        Even small offsets (0.2–0.3 m) drastically reduce the
+        drafting benefit, consistent with CFD wake profiles.
+
+    The model combines five independent factors:
+      1. Gap distance      — double-exponential fit to Blocken et al. CFD data
+      2. Speed             — power-law scaling (aero drag ~ v²), with a
+                             minimum-speed threshold at ~15 km/h
+      3. Group size        — logarithmic bonus for larger wakes
+      4. Position          — mild decay for positions behind the first follower
+      5. Lateral offset    — Gaussian attenuation (σ ≈ 0.25 m)
+
+    Notes
+    -----
+    This factor must be applied exclusively to the aerodynamic component
+    of power or force.  Gravity and rolling resistance are unaffected by
+    the slipstream.  See ``calculate_cyclist_powers`` for correct usage.
     """
     if riders < 2 or position < 1 or position > riders:
         return 1.0
@@ -263,7 +317,7 @@ def cycling_draft_drag_reduction(riders: int, position: int,
     # 1) Base reduction from gap distance (calibrated at reference speed)
     base_red = _gap_reduction(gap_clamped)
 
-    # 2) Speed correction
+    # 2) Speed correction (returns 0.0 below ~15 km/h threshold)
     spd = _speed_factor(speed_ms)
 
     # 3) Group-size bonus
@@ -272,8 +326,11 @@ def cycling_draft_drag_reduction(riders: int, position: int,
     # 4) Position decay
     pos = _position_decay(position, riders_eff)
 
+    # 5) Lateral offset attenuation
+    lat = _lateral_factor(abs(lateral_offset_m))
+
     # Combined drag reduction fraction
-    total_reduction = base_red * spd * grp * pos
+    total_reduction = base_red * spd * grp * pos * lat
 
     # Clamp: maximum realistic reduction is ~80% (multiplier 0.20)
     total_reduction = min(total_reduction, 0.80)
@@ -371,16 +428,20 @@ def compute_avg_elevation(start_elev: float, slope_pct: float, distance_km: floa
 
 def calculate_cyclist_powers(riders, position, rotating, work_pct,
                              front_power, aero_watts, non_aero_watts,
-                             draft_fn, speed_kmh=40.0, gap_m=0.5):
+                             draft_fn, speed_kmh=40.0, gap_m=0.5,
+                             lateral_offset_m=0.0):
     """Return per-position powers at the same group speed.
 
-    Drafting only reduces the aerodynamic drag component.  Gravity and
+    Drafting only reduces the **aerodynamic** drag component.  Gravity and
     rolling resistance are unaffected by the slipstream.
 
-    ``front_power``    – total power of the front rider (no drafting)
-    ``aero_watts``     – aerodynamic component of front_power
-    ``non_aero_watts`` – gravity + rolling component (unchanged by drafting)
-    ``speed_kmh`` and ``gap_m`` are forwarded to the dynamic draft function.
+    Parameters
+    ----------
+    front_power    : total power of the front rider (no drafting)
+    aero_watts     : aerodynamic component of front_power
+    non_aero_watts : gravity + rolling component (unchanged by drafting)
+    speed_kmh, gap_m, lateral_offset_m
+        Forwarded to the dynamic draft function.
     """
     if riders < 2:
         return []
@@ -388,7 +449,8 @@ def calculate_cyclist_powers(riders, position, rotating, work_pct,
     position = max(1, min(riders, int(position)))
     data = []
     for i in range(1, riders + 1):
-        df = draft_fn(riders, i, speed_kmh=speed_kmh, gap_m=gap_m)
+        df = draft_fn(riders, i, speed_kmh=speed_kmh, gap_m=gap_m,
+                      lateral_offset_m=lateral_offset_m)
         # Draft factor only applies to aero watts; non-aero stays the same
         drafted_aero = aero_watts * df
         cp = drafted_aero + non_aero_watts

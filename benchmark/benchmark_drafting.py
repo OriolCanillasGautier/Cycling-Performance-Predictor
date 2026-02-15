@@ -25,23 +25,23 @@ def main() -> None:
     print(f"Scenarios file: {result['source']}")
     print()
     print(
-        f"{'ID':<4} {'Name':<28} {'Sex':<6} {'R':>2} {'P':>2} {'km/h':>6} {'Gap':>5} "
+        f"{'ID':<4} {'Name':<28} {'Sex':<6} {'R':>2} {'P':>2} {'km/h':>6} {'Gap':>5} {'Lat':>5} "
         f"{'DynDraft%':>10} {'LegDraft%':>10} {'DynCdA':>8} {'LegCdA':>8} "
         f"{'DynW':>8} {'LegW':>8} {'DiffW':>8}"
     )
-    print("-" * 120)
+    print("-" * 125)
 
     for r in result["rows"]:
         print(
             f"{r['id']:<4} {r['name'][:28]:<28} {r['sex'][:6]:<6} "
-            f"{r['riders']:>2} {r['position']:>2} {r['speed_kmh']:>6.1f} {r['gap_m']:>5.2f} "
+            f"{r['riders']:>2} {r['position']:>2} {r['speed_kmh']:>6.1f} {r['gap_m']:>5.2f} {r['lateral_offset_m']:>5.2f} "
             f"{r['dyn_draft_pct']:>10.1f} {r['leg_draft_pct']:>10.1f} "
             f"{r['dyn_cda']:>8.4f} {r['leg_cda']:>8.4f} "
             f"{r['dyn_power_w']:>8.1f} {r['leg_power_w']:>8.1f} {r['power_diff_w']:>8.1f}"
         )
 
     s = result["summary"]
-    print("-" * 120)
+    print("-" * 125)
     print(f"Scenario count : {s['scenario_count']}")
     print(f"Mean dyn power : {s['mean_dyn_power_w']:.2f} W")
     print(f"Mean leg power : {s['mean_leg_power_w']:.2f} W")

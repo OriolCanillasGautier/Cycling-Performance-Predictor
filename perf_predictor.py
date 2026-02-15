@@ -112,10 +112,11 @@ def run_calculation(state: dict, lang: str) -> dict:
         riders = state["riders"]
         pos = state["position"]
         gap = state["draft_gap"]
+        lat = state["lateral_offset"]
         if state["rotating"]:
             draft_info = t("draft_rotating", lang).format(work_pct=state["work_pct"])
         else:
-            dr = cycling_draft_drag_reduction(riders, pos, speed_kmh=40.0, gap_m=gap)
+            dr = cycling_draft_drag_reduction(riders, pos, speed_kmh=40.0, gap_m=gap, lateral_offset_m=lat)
             draft_info = t("draft_position", lang).format(
                 position=pos, riders=riders, draft_pct=(1 - dr) * 100
             )
@@ -150,6 +151,7 @@ def run_calculation(state: dict, lang: str) -> dict:
     if state["drafting"] and state["riders"] >= 2:
         speed_kmh = pred_speed
         gap = state["draft_gap"]
+        lat = state["lateral_offset"]
         # Aero vs non-aero breakdown from the physics estimate
         aero_w = max(0, est.a_watts)
         non_aero_w = calc_power - aero_w  # gravity + rolling
@@ -157,7 +159,7 @@ def run_calculation(state: dict, lang: str) -> dict:
             state["riders"], state["position"], state["rotating"],
             state["work_pct"], calc_power, aero_w, non_aero_w,
             cycling_draft_drag_reduction,
-            speed_kmh=speed_kmh, gap_m=gap,
+            speed_kmh=speed_kmh, gap_m=gap, lateral_offset_m=lat,
         )
         if cyclist_data:
             group_power = sum(c["power"] for c in cyclist_data) / len(cyclist_data)
@@ -165,7 +167,7 @@ def run_calculation(state: dict, lang: str) -> dict:
                 ft = state["work_pct"] / 100.0
                 rear_df = cycling_draft_drag_reduction(
                     state["riders"], state["riders"],
-                    speed_kmh=speed_kmh, gap_m=gap,
+                    speed_kmh=speed_kmh, gap_m=gap, lateral_offset_m=lat,
                 )
                 # When at front: full power; when behind: only aero reduced
                 front_total = calc_power
@@ -174,7 +176,7 @@ def run_calculation(state: dict, lang: str) -> dict:
             else:
                 your_df = cycling_draft_drag_reduction(
                     state["riders"], state["position"],
-                    speed_kmh=speed_kmh, gap_m=gap,
+                    speed_kmh=speed_kmh, gap_m=gap, lateral_offset_m=lat,
                 )
                 your_power = aero_w * your_df + non_aero_w
 
@@ -183,7 +185,8 @@ def run_calculation(state: dict, lang: str) -> dict:
         riders = state["riders"]
         pos = state["position"]
         gap = state["draft_gap"]
-        dr = cycling_draft_drag_reduction(riders, pos, speed_kmh=pred_speed, gap_m=gap)
+        lat = state["lateral_offset"]
+        dr = cycling_draft_drag_reduction(riders, pos, speed_kmh=pred_speed, gap_m=gap, lateral_offset_m=lat)
         draft_info = t("draft_position", lang).format(
             position=pos, riders=riders, draft_pct=(1 - dr) * 100
         )
@@ -262,6 +265,7 @@ def main_page():
         "rotating": False,
         "work_pct": 50,
         "draft_gap": 0.5,
+        "lateral_offset": 0.0,
     }
 
     def L():
@@ -474,6 +478,18 @@ def _build_drafting(lang, state, refreshable):
                     ),
                 ).props("outlined dark color=blue-4").classes("w-full")
                 ui.label(t("info_draft_gap", lang)).classes(
+                    "text-[11px] text-gray-600"
+                )
+                ui.number(
+                    label=t("label_lateral_offset", lang),
+                    value=state["lateral_offset"], min=0.0, max=1.0, step=0.01,
+                    format="%.2f", suffix="m",
+                    on_change=lambda e: (
+                        state.__setitem__("lateral_offset", round(e.value, 2)),
+                        refreshable.refresh(),
+                    ),
+                ).props("outlined dark color=blue-4").classes("w-full")
+                ui.label(t("info_lateral_offset", lang)).classes(
                     "text-[11px] text-gray-600"
                 )
                 ui.switch(

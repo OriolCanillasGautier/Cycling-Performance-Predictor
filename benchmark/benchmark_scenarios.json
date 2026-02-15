@@ -26,6 +26,10 @@
     {"id": "S12", "name": "Slow climb pair", "sex": "female", "riders": 2, "position": 2, "gap_m": 0.5, "speed_kmh": 18.0, "gradient_pct": 8.0, "total_mass_kg": 63.0},
     {"id": "S13", "name": "TT-like no draft", "sex": "male", "riders": 2, "position": 1, "gap_m": 5.0, "speed_kmh": 46.0, "gradient_pct": 0.0},
     {"id": "S14", "name": "Distance+time derived speed", "sex": "male", "riders": 5, "position": 3, "gap_m": 1.2, "distance_km": 25.0, "time_s": 2400, "gradient_pct": 2.5},
-    {"id": "S15", "name": "Women endurance train", "sex": "female", "riders": 5, "position": 4, "gap_m": 0.9, "distance_km": 30.0, "time_s": 3000, "gradient_pct": 1.8, "total_mass_kg": 62.0}
+    {"id": "S15", "name": "Women endurance train", "sex": "female", "riders": 5, "position": 4, "gap_m": 0.9, "distance_km": 30.0, "time_s": 3000, "gradient_pct": 1.8, "total_mass_kg": 62.0},
+    {"id": "S16", "name": "Lat offset 0.15m fast", "sex": "male", "riders": 2, "position": 2, "gap_m": 0.5, "lateral_offset_m": 0.15, "speed_kmh": 45.0, "gradient_pct": 1.0},
+    {"id": "S17", "name": "Lat offset 0.30m fast", "sex": "male", "riders": 2, "position": 2, "gap_m": 0.5, "lateral_offset_m": 0.30, "speed_kmh": 45.0, "gradient_pct": 1.0},
+    {"id": "S18", "name": "Lat offset 0.50m fast", "sex": "male", "riders": 2, "position": 2, "gap_m": 0.5, "lateral_offset_m": 0.50, "speed_kmh": 45.0, "gradient_pct": 1.0},
+    {"id": "S19", "name": "Very slow climb (12 km/h)", "sex": "male", "riders": 4, "position": 3, "gap_m": 0.5, "speed_kmh": 12.0, "gradient_pct": 10.0}
   ]
 }
