@@ -1,0 +1,31 @@
+{
+  "defaults": {
+    "distance_km": 12.0,
+    "gradient_pct": 6.0,
+    "total_mass_kg": 78.0,
+    "air_density": 1.225,
+    "crr": 0.005,
+    "drivetrain_efficiency": 0.975,
+    "cda_men_0": 0.35,
+    "cda_men_100": 0.2625,
+    "cda_women_0": 0.31,
+    "cda_women_100": 0.2325
+  },
+  "scenarios": [
+    {"id": "S01", "name": "Pair close moderate", "sex": "male", "riders": 2, "position": 2, "gap_m": 0.45, "speed_kmh": 38.0},
+    {"id": "S02", "name": "Pair 2m moderate", "sex": "male", "riders": 2, "position": 2, "gap_m": 2.0, "speed_kmh": 38.0},
+    {"id": "S03", "name": "Pair close fast", "sex": "male", "riders": 2, "position": 2, "gap_m": 0.25, "speed_kmh": 52.0, "gradient_pct": 2.0},
+    {"id": "S04", "name": "Trio third wheel", "sex": "male", "riders": 3, "position": 3, "gap_m": 0.6, "speed_kmh": 42.0, "gradient_pct": 4.0},
+    {"id": "S05", "name": "Trio second wheel", "sex": "female", "riders": 3, "position": 2, "gap_m": 0.5, "speed_kmh": 39.0, "total_mass_kg": 66.0},
+    {"id": "S06", "name": "4 riders last wheel", "sex": "male", "riders": 4, "position": 4, "gap_m": 0.35, "speed_kmh": 45.0, "gradient_pct": 3.0},
+    {"id": "S07", "name": "4 riders second", "sex": "female", "riders": 4, "position": 2, "gap_m": 0.35, "speed_kmh": 45.0, "gradient_pct": 3.0, "total_mass_kg": 64.0},
+    {"id": "S08", "name": "6 riders middle", "sex": "male", "riders": 6, "position": 3, "gap_m": 0.7, "speed_kmh": 41.0, "distance_km": 20.0},
+    {"id": "S09", "name": "6 riders deep line", "sex": "male", "riders": 6, "position": 6, "gap_m": 0.7, "speed_kmh": 41.0, "distance_km": 20.0},
+    {"id": "S10", "name": "8 riders peloton middle", "sex": "male", "riders": 8, "position": 4, "gap_m": 0.5, "speed_kmh": 48.0, "gradient_pct": 1.0},
+    {"id": "S11", "name": "8 riders peloton last", "sex": "male", "riders": 8, "position": 8, "gap_m": 0.5, "speed_kmh": 48.0, "gradient_pct": 1.0},
+    {"id": "S12", "name": "Slow climb pair", "sex": "female", "riders": 2, "position": 2, "gap_m": 0.5, "speed_kmh": 18.0, "gradient_pct": 8.0, "total_mass_kg": 63.0},
+    {"id": "S13", "name": "TT-like no draft", "sex": "male", "riders": 2, "position": 1, "gap_m": 5.0, "speed_kmh": 46.0, "gradient_pct": 0.0},
+    {"id": "S14", "name": "Distance+time derived speed", "sex": "male", "riders": 5, "position": 3, "gap_m": 1.2, "distance_km": 25.0, "time_s": 2400, "gradient_pct": 2.5},
+    {"id": "S15", "name": "Women endurance train", "sex": "female", "riders": 5, "position": 4, "gap_m": 0.9, "distance_km": 30.0, "time_s": 3000, "gradient_pct": 1.8, "total_mass_kg": 62.0}
+  ]
+}

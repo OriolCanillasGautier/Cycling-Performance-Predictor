@@ -21,7 +21,7 @@ for _site in (
 
 from nicegui import app, ui
 
-from cycling_physics import (
+from app.cycling_physics import (
     CyclingPhysics,
     TERRAIN_CRR,
     cycling_draft_drag_reduction,
@@ -33,7 +33,7 @@ from cycling_physics import (
 
 # ── Language packs ──────────────────────────────────────────────────────────
 
-_LANG_PATH = os.path.join(os.path.dirname(__file__), "languagepacks.json")
+_LANG_PATH = os.path.join(os.path.dirname(__file__), "app", "languagepacks.json")
 with open(_LANG_PATH, encoding="utf-8") as _f:
     LANG = json.load(_f)
 
@@ -111,10 +111,11 @@ def run_calculation(state: dict, lang: str) -> dict:
     if state["drafting"] and state["riders"] >= 2:
         riders = state["riders"]
         pos = state["position"]
+        gap = state["draft_gap"]
         if state["rotating"]:
             draft_info = t("draft_rotating", lang).format(work_pct=state["work_pct"])
         else:
-            dr = cycling_draft_drag_reduction(riders, pos)
+            dr = cycling_draft_drag_reduction(riders, pos, speed_kmh=40.0, gap_m=gap)
             draft_info = t("draft_position", lang).format(
                 position=pos, riders=riders, draft_pct=(1 - dr) * 100
             )
@@ -147,19 +148,45 @@ def run_calculation(state: dict, lang: str) -> dict:
         calc_power = est.watts
 
     if state["drafting"] and state["riders"] >= 2:
+        speed_kmh = pred_speed
+        gap = state["draft_gap"]
+        # Aero vs non-aero breakdown from the physics estimate
+        aero_w = max(0, est.a_watts)
+        non_aero_w = calc_power - aero_w  # gravity + rolling
         cyclist_data = calculate_cyclist_powers(
             state["riders"], state["position"], state["rotating"],
-            state["work_pct"], calc_power, cda_val, cycling_draft_drag_reduction,
+            state["work_pct"], calc_power, aero_w, non_aero_w,
+            cycling_draft_drag_reduction,
+            speed_kmh=speed_kmh, gap_m=gap,
         )
         if cyclist_data:
             group_power = sum(c["power"] for c in cyclist_data) / len(cyclist_data)
             if state["rotating"]:
                 ft = state["work_pct"] / 100.0
-                rear_df = cycling_draft_drag_reduction(state["riders"], state["riders"])
-                your_power = calc_power * (ft + (1 - ft) * rear_df)
+                rear_df = cycling_draft_drag_reduction(
+                    state["riders"], state["riders"],
+                    speed_kmh=speed_kmh, gap_m=gap,
+                )
+                # When at front: full power; when behind: only aero reduced
+                front_total = calc_power
+                rear_total = aero_w * rear_df + non_aero_w
+                your_power = ft * front_total + (1 - ft) * rear_total
             else:
-                your_df = cycling_draft_drag_reduction(state["riders"], state["position"])
-                your_power = calc_power * your_df
+                your_df = cycling_draft_drag_reduction(
+                    state["riders"], state["position"],
+                    speed_kmh=speed_kmh, gap_m=gap,
+                )
+                your_power = aero_w * your_df + non_aero_w
+
+    # Recompute draft_info with actual predicted speed
+    if state["drafting"] and state["riders"] >= 2 and not state["rotating"]:
+        riders = state["riders"]
+        pos = state["position"]
+        gap = state["draft_gap"]
+        dr = cycling_draft_drag_reduction(riders, pos, speed_kmh=pred_speed, gap_m=gap)
+        draft_info = t("draft_position", lang).format(
+            position=pos, riders=riders, draft_pct=(1 - dr) * 100
+        )
 
     pred_wkg = calc_power / total_weight
     gw, aw, rw = est.g_watts, est.a_watts, est.r_watts
@@ -234,6 +261,7 @@ def main_page():
         "position": 2,
         "rotating": False,
         "work_pct": 50,
+        "draft_gap": 0.5,
     }
 
     def L():
@@ -437,6 +465,19 @@ def _build_drafting(lang, state, refreshable):
                         refreshable.refresh(),
                     ),
                 ).props("outlined dark color=blue-4").classes("w-full")
+                ui.label(
+                    t("label_draft_gap", lang) + f": {state['draft_gap']:.2f} m"
+                ).classes("text-white text-sm font-medium")
+                ui.slider(
+                    min=0.15, max=5.0, step=0.01, value=state["draft_gap"],
+                    on_change=lambda e: (
+                        state.__setitem__("draft_gap", round(e.value, 2)),
+                        refreshable.refresh(),
+                    ),
+                ).props("dark color=blue-6").classes("w-full")
+                ui.label(t("info_draft_gap", lang)).classes(
+                    "text-[11px] text-gray-600"
+                )
                 ui.switch(
                     t("label_rotating", lang), value=state["rotating"],
                     on_change=lambda e: (
@@ -631,7 +672,12 @@ def _show_results_dialog(res, lang):
                         ui.label(
                             f'{t("cyclist_pos", lang)} {c["position"]}{tag}'
                         ).classes("text-xs text-gray-300 font-bold")
-                        ui.label(f'{c["power"]}W').classes(
+                        display_power = c["power"]
+                        if is_you and c.get("time_pct", 0) > 0 and res.get("your_power"):
+                            # In rotating mode, show your averaged rider power,
+                            # not just the instantaneous rear-position demand.
+                            display_power = res["your_power"]
+                        ui.label(f'{display_power}W').classes(
                             "text-base font-bold text-white"
                         )
                         if c["time_pct"] > 0:

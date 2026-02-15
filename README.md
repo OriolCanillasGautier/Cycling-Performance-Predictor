@@ -11,11 +11,21 @@ The model combines gravity, rolling resistance, aerodynamics, drivetrain losses,
 
 ## Project Structure
 
-- [perf_predictor.py](perf_predictor.py): NiceGUI FastAPI-based UI, event wiring, and calculation orchestration.
-- [cycling_physics.py](cycling_physics.py): Core physics equations, utility functions, drafting logic, and constants.
-- [styles.css](styles.css): Centralized dark theme styling and NiceGUI component overrides.
-- [languagepacks.json](languagepacks.json): Internationalization strings for 26 languages (English, Catalan, French, Spanish, German, Italian, Portuguese, Dutch, Polish, Swedish, Norwegian, Danish, Finnish, Czech, Slovak, Hungarian, Romanian, Bulgarian, Greek, Croatian, Slovenian, Estonian, Latvian, Lithuanian, Irish, Maltese).
-- [requirements.txt](requirements.txt): Python dependencies.
+**Root** – Main application and documentation:
+- `perf_predictor.py` – NiceGUI UI, event wiring, and calculation orchestration
+- `requirements.txt` – Python dependencies
+- `LICENSE`, `README.md`, `.gitignore` – Metadata
+
+**app/** – Core cycling physics:
+- `cycling_physics.py` – Physics engine, drafting models, utilities
+- `styles.css` – Dark theme and NiceGUI component overrides
+- `languagepacks.json` – 26-language internationalization
+
+**benchmark/** – Testing and comparison tools:
+- `benchmark_web.py` – Interactive web UI with charts (plotly)
+- `benchmark_drafting.py` – CLI benchmark runner
+- `benchmark_engine.py` – Shared calculation engine
+- `benchmark_scenarios.json` – Test scenario definitions (customizable)
 
 ---
 
@@ -96,6 +106,47 @@ The NiceGUI server will start on http://localhost:7860.
 7. Click Calculate Performance.
 
 Results display in a detailed dialog with power breakdown, time/speed prediction, and drafting analysis.
+
+Main app note: the production UI uses the dynamic drafting model only. Legacy comparison is available in benchmark tools.
+
+---
+
+## Benchmark Tools (JSON + Web)
+
+The benchmark system is driven by [benchmark_scenarios.json](benchmark_scenarios.json).
+
+It uses a DIY power method with:
+
+- Distance, gradient, time/speed, total mass,
+- Air density, CRR, drivetrain efficiency, CdA,
+- CdA interpolation by drafting percentage:
+   - Men: 0% draft = 0.3500, 100% draft = 0.2625
+   - Women: lower baseline (configurable in JSON defaults)
+
+### Run benchmark in terminal
+
+```bash
+python benchmark_drafting.py
+---
+
+## Benchmark Tools
+
+### Run benchmark CLI
+```bash
+python benchmark/benchmark_drafting.py
+```
+Compares both models across test scenarios (JSON-driven).
+
+### Run benchmark web UI
+```bash
+python benchmark/benchmark_web.py
+```
+Interactive comparison with plotly charts:
+- Power comparison (dynamic vs legacy bars)
+- Power difference analysis
+- CdA multiplier trends
+- Gap vs power scatter plot
+- Full detailed table
 
 ---
 
