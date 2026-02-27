@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any, TypedDict
 
 # Allow running the script directly on Windows (e.g. .\perf_predictor.py)
 # while still resolving packages from the project's virtual environment.
@@ -30,6 +31,37 @@ from app.cycling_physics import (
     compute_avg_elevation,
     calculate_cyclist_powers,
 )
+
+
+# ── Type definitions ────────────────────────────────────────────────────────
+
+class AppState(TypedDict):
+    """Application state dictionary."""
+    lang: str
+    calc_mode: str
+    power: float
+    target_time: str
+    orig_power: float
+    orig_time: str
+    orig_speed: float
+    body_weight: float
+    gear_weight: float
+    slope: float
+    distance: float
+    start_elevation: float
+    wind: float
+    cda: float
+    crr: float
+    bike_type: str
+    terrain: str
+    drafting: bool
+    riders: int
+    position: int
+    rotating: bool
+    work_pct: float
+    draft_gap: float
+    lateral_offset: float
+
 
 # ── Language packs ──────────────────────────────────────────────────────────
 
@@ -88,7 +120,7 @@ def cda_position(cda: float, lang: str) -> str:
 
 # ── Core calculation ────────────────────────────────────────────────────────
 
-def run_calculation(state: dict, lang: str) -> dict:
+def run_calculation(state: dict[str, Any], lang: str) -> dict[str, Any]:
     body_w = state["body_weight"]
     gear_w = state["gear_weight"]
     if body_w <= 0 or gear_w < 0 or state["distance"] <= 0:
@@ -241,7 +273,7 @@ def run_calculation(state: dict, lang: str) -> dict:
 @ui.page("/")
 def main_page():
     # Reactive state
-    state = {
+    state: dict[str, Any] = {
         "lang": "en",
         "calc_mode": "power_to_time",
         "power": 250,
@@ -268,7 +300,7 @@ def main_page():
         "lateral_offset": 0.0,
     }
 
-    def L():
+    def L() -> str:
         return state["lang"]
 
     # Dark background + spacing overrides
@@ -308,7 +340,7 @@ def main_page():
                     value=state["calc_mode"],
                     on_change=lambda e: (
                         state.__setitem__("calc_mode", e.value),
-                        body_content.refresh(),
+                        body_content.refresh(),  # type: ignore
                     ),
                 ).props("unelevated no-caps color=slate-7 toggle-color=blue-7")
 
@@ -329,10 +361,10 @@ def main_page():
                 "w-full max-w-md mx-auto mt-2 font-bold tracking-wide"
             )
 
-    def _change_lang(val):
+    def _change_lang(val: str) -> None:
         state["lang"] = val
         header_title.text = t("app_title", val)
-        body_content.refresh()
+        body_content.refresh()  # type: ignore
 
     def _calculate():
         lang = L()
@@ -354,7 +386,7 @@ def _heading(text: str):
     )
 
 
-def _build_baseline(lang, state):
+def _build_baseline(lang: str, state: dict[str, Any]) -> None:
     with ui.card().classes("w-full").style(
         "background:#111827;border:1px solid #374151"
     ):
@@ -384,22 +416,22 @@ def _build_baseline(lang, state):
             )
 
 
-def _build_rolling(lang, state, refreshable):
+def _build_rolling(lang: str, state: dict[str, Any], refreshable: Any) -> None:
     bike_opts = {"road": t("bike_road", lang), "mtb": t("bike_mtb", lang)}
     terrain_keys = list(TERRAIN_CRR[state["bike_type"]].keys())
     terrain_opts = {k: t(f"terrain_{k}", lang) for k in terrain_keys}
 
-    def _bike_changed(val):
+    def _bike_changed(val: str) -> None:
         state["bike_type"] = val
         keys = list(TERRAIN_CRR[val].keys())
         state["terrain"] = keys[0]
         state["crr"] = TERRAIN_CRR[val][keys[0]]
-        refreshable.refresh()
+        refreshable.refresh()  # type: ignore
 
-    def _terrain_changed(val):
+    def _terrain_changed(val: str) -> None:
         state["terrain"] = val
         state["crr"] = TERRAIN_CRR[state["bike_type"]].get(val, 0.0050)
-        refreshable.refresh()
+        refreshable.refresh()  # type: ignore
 
     with ui.card().classes("w-full").style(
         "background:#111827;border:1px solid #374151"
@@ -425,7 +457,7 @@ def _build_rolling(lang, state, refreshable):
             )
 
 
-def _build_aero(lang, state, refreshable):
+def _build_aero(lang: str, state: dict[str, Any], refreshable: Any) -> None:
     with ui.card().classes("w-full").style(
         "background:#111827;border:1px solid #374151"
     ):
@@ -437,7 +469,7 @@ def _build_aero(lang, state, refreshable):
                 format="%.2f", suffix="m²",
                 on_change=lambda e: (
                     state.__setitem__("cda", e.value),
-                    refreshable.refresh(),
+                    refreshable.refresh(),  # type: ignore
                 ),
             ).props("outlined dark color=blue-4").classes("w-full")
             ui.label(cda_position(state["cda"], lang)).classes(
@@ -446,7 +478,7 @@ def _build_aero(lang, state, refreshable):
             ui.label(t("info_cda", lang)).classes("text-[11px] text-gray-600")
 
 
-def _build_drafting(lang, state, refreshable):
+def _build_drafting(lang: str, state: dict[str, Any], refreshable: Any) -> None:
     with ui.card().classes("w-full").style(
         "background:#111827;border:1px solid #374151"
     ):
@@ -456,7 +488,7 @@ def _build_drafting(lang, state, refreshable):
                 t("label_enable_drafting", lang), value=state["drafting"],
                 on_change=lambda e: (
                     state.__setitem__("drafting", e.value),
-                    refreshable.refresh(),
+                    refreshable.refresh(),  # type: ignore
                 ),
             ).props("dark color=blue-6")
             if state["drafting"]:
@@ -465,7 +497,7 @@ def _build_drafting(lang, state, refreshable):
                     value=state["riders"], min=2, max=8, step=1,
                     on_change=lambda e: (
                         state.__setitem__("riders", int(e.value)),
-                        refreshable.refresh(),
+                        refreshable.refresh(),  # type: ignore
                     ),
                 ).props("outlined dark color=blue-4").classes("w-full")
                 ui.number(
@@ -474,7 +506,7 @@ def _build_drafting(lang, state, refreshable):
                     format="%.2f", suffix="m",
                     on_change=lambda e: (
                         state.__setitem__("draft_gap", round(e.value, 2)),
-                        refreshable.refresh(),
+                        refreshable.refresh(),  # type: ignore
                     ),
                 ).props("outlined dark color=blue-4").classes("w-full")
                 ui.label(t("info_draft_gap", lang)).classes(
@@ -486,7 +518,7 @@ def _build_drafting(lang, state, refreshable):
                     format="%.2f", suffix="m",
                     on_change=lambda e: (
                         state.__setitem__("lateral_offset", round(e.value, 2)),
-                        refreshable.refresh(),
+                        refreshable.refresh(),  # type: ignore
                     ),
                 ).props("outlined dark color=blue-4").classes("w-full")
                 ui.label(t("info_lateral_offset", lang)).classes(
@@ -496,7 +528,7 @@ def _build_drafting(lang, state, refreshable):
                     t("label_rotating", lang), value=state["rotating"],
                     on_change=lambda e: (
                         state.__setitem__("rotating", e.value),
-                        refreshable.refresh(),
+                        refreshable.refresh(),  # type: ignore
                     ),
                 ).props("dark color=blue-6")
                 if state["rotating"]:
@@ -515,7 +547,7 @@ def _build_drafting(lang, state, refreshable):
                     ).props("outlined dark color=blue-4").classes("w-full")
 
 
-def _build_prediction(lang, state):
+def _build_prediction(lang: str, state: dict[str, Any]) -> None:
     with ui.card().classes("w-full").style(
         "background:#111827;border:1px solid #374151"
     ):
@@ -591,7 +623,7 @@ def _build_prediction(lang, state):
 
 # ── Results dialog ──────────────────────────────────────────────────────────
 
-def _show_results_dialog(res, lang):
+def _show_results_dialog(res: dict[str, Any], lang: str) -> None:
     with ui.dialog().props("maximized=false") as dlg, \
          ui.card().classes("w-full max-w-3xl").style(
              "background:#0f172a;color:white;max-height:90vh;overflow-y:auto"
@@ -708,7 +740,7 @@ def _show_results_dialog(res, lang):
     dlg.open()
 
 
-def _result_card(label, value, sub):
+def _result_card(label: str, value: str, sub: str) -> None:
     with ui.card().classes("flex-1 min-w-[140px] p-3").style(
         "background:#1e293b;border:1px solid #374151"
     ):
@@ -720,7 +752,7 @@ def _result_card(label, value, sub):
             ui.label(sub).classes("text-xs text-gray-500")
 
 
-def _power_bar(label, pct_str, watts_str, color):
+def _power_bar(label: str, pct_str: str, watts_str: str, color: str) -> None:
     pct = float(pct_str or 0)
     with ui.row().classes("w-full items-center gap-3 my-1"):
         ui.label(label).classes("w-28 text-sm text-gray-300")
@@ -737,7 +769,7 @@ def _power_bar(label, pct_str, watts_str, color):
 
 # ── Run ─────────────────────────────────────────────────────────────────────
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(
+    ui.run(  # type: ignore
         title="Performance Predictor",
         favicon=_FAVICON,
         port=7860,

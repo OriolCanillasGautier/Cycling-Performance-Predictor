@@ -5,7 +5,7 @@ All calculations, constants, formatters, and HTML-snippet builders live here.
 """
 
 import math
-from typing import Optional, NamedTuple
+from typing import Optional, NamedTuple, Any
 
 
 # ── Data ────────────────────────────────────────────────────────────────────
@@ -426,10 +426,12 @@ def compute_avg_elevation(start_elev: float, slope_pct: float, distance_km: floa
 
 # ── Cyclist-powers for drafting visual ──────────────────────────────────────
 
-def calculate_cyclist_powers(riders, position, rotating, work_pct,
-                             front_power, aero_watts, non_aero_watts,
-                             draft_fn, speed_kmh=40.0, gap_m=0.5,
-                             lateral_offset_m=0.0):
+def calculate_cyclist_powers(
+    riders: int, position: int, rotating: bool, work_pct: float,
+    front_power: float, aero_watts: float, non_aero_watts: float,
+    draft_fn: Any, speed_kmh: float = 40.0, gap_m: float = 0.5,
+    lateral_offset_m: float = 0.0
+) -> list[dict[str, Any]]:
     """Return per-position powers at the same group speed.
 
     Drafting only reduces the **aerodynamic** drag component.  Gravity and
